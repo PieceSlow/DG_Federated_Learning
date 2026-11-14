@@ -1,0 +1,36 @@
+# ===== 运行产物：含 MIMIC 派生的患者级/文本级数据，禁止提交 =====
+/output/*
+!/output/.gitkeep
+/output*/
+archive/*/output/
+archive/*/output*/
+*.parquet
+*.csv.gz
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ===== 编辑器 / 操作系统 =====
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+
+# ===== 汇报生成物 =====
+tools/slides/*.pptx
+tools/slides/ppt_preview/

@@ -1,0 +1,8 @@
+# 医疗数据治理流水线运行依赖（Python >= 3.10）
+pandas>=2.2
+pyarrow>=14
+langgraph>=1.0
+flexible-schema>=0.1
+
+# 可选：仅对象图谱绘图（tools 下的脚本）需要
+Pillow>=10
