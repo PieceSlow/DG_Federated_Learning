@@ -14,8 +14,17 @@
 
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 
+from governance.alignment import (
+    build_candidates,
+    extract_source_fields,
+    select_mappings,
+    targets_from_gold,
+)
+from governance.alignment.evaluate import evaluate
 from governance.context import GovernanceContext, require_state
 
 
@@ -97,9 +106,23 @@ def run(ctx: GovernanceContext) -> None:
     ctx.field_map = field_map
     ctx.record_map = record_map
 
+    # 模式匹配：源字段 × 目标字段 → 候选矩阵 → 选最优 → 与 gold 对比
+    sources = extract_source_fields(ctx.tables)
+    targets = targets_from_gold(field_map)
+    candidates = build_candidates(sources, targets)
+    selected = select_mappings(candidates)
+    report = evaluate(selected, candidates, field_map)
+
     dest = ctx.settings.governance / "mapping"
     dest.mkdir(parents=True, exist_ok=True)
     field_map.to_csv(dest / "field_level.csv", index=False, encoding="utf-8-sig")
+    field_map.to_csv(dest / "field_level_gold.csv", index=False, encoding="utf-8-sig")
+    selected.to_csv(dest / "field_level_auto.csv", index=False, encoding="utf-8-sig")
+    candidates.to_parquet(dest / "match_candidates.parquet", index=False)
+    (ctx.settings.governance / "quality").mkdir(parents=True, exist_ok=True)
+    (ctx.settings.governance / "quality" / "alignment_report.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     typed = record_map.copy()
     typed["hadm_id"] = pd.array(typed["hadm_id"], dtype="Int64")
     typed["stay_id"] = pd.array(typed["stay_id"], dtype="Int64")
@@ -109,10 +132,18 @@ def run(ctx: GovernanceContext) -> None:
         {
             "field_mappings": int(len(field_map)),
             "record_mappings": int(len(record_map)),
+            "alignment": {
+                "candidates": int(len(candidates)),
+                "auto_mappings": int(len(selected)),
+                "precision": report["precision"],
+                "recall": report["recall"],
+                "top3_recall": report["top3_recall"],
+            },
         }
     )
     ctx.log(
         "字段对齐",
-        f"字段级映射 {len(field_map)} 条、记录级映射 {len(record_map)} 条；"
-        "聚合行使用 subject 级血缘，不伪造一对一来源。",
+        f"人工确认映射 {len(field_map)} 条（gold）、记录级映射 {len(record_map)} 条；"
+        f"匹配器生成 {len(selected)} 条候选映射，"
+        f"P={report['precision']:.2f} / R={report['recall']:.2f} / Top3 R={report['top3_recall']:.2f}。",
     )

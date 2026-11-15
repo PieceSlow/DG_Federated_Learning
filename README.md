@@ -23,7 +23,7 @@
 | 03 | 质量校验 | 编码/关联/时间/重复校验 + MEDS 核心 schema | `quality/issues.csv` |
 | 04 | 事件仓储 | 按 MEDS 目录落盘，写盘后重新读回再校验 | `eventstore/` |
 | 05 | 多源汇聚 | 统一事件表 + 患者 360 宽表 | `dataset/*.parquet` |
-| 06 | 字段对齐 | 字段级映射（33 条）+ 记录级血缘 | `mapping/*` |
+| 06 | 字段对齐 | 人工 gold 33 条 + 匹配器候选（P/R 评测）+ 记录级血缘 | `mapping/*`、`alignment_report.json` |
 | 07 | 概念归一 | UMLS 编码/药名/检验名 → 概念（CUI）与语义类型 | `concept_map.parquet`、`concept_coverage.json` |
 | 08 | 对象化 | 智能体提案对象/关系 → 本地实例化（可回退确定性模型）+ 图谱自检 | `graph/nodes.parquet`、`graph/edges/*`、`object_graph.json` |
 | 09 | 标签化 | 6 个技术维度 + 对象级业务标签（事实/派生/画像/手动） | `labels.json`、`labels/object_labels.parquet` |
@@ -146,12 +146,14 @@ output/
 │   └── metadata/{codes.parquet, subject_splits.parquet, dataset.json}
 ├── governance/                       # 治理资产
 │   ├── dataset/{clinical_events.parquet, patient_360.parquet}
-│   ├── mapping/{field_level.csv, record_level.parquet}
+│   ├── mapping/{field_level.csv, field_level_gold.csv, field_level_auto.csv,
+│   │             record_level.parquet, match_candidates.parquet}
 │   ├── graph/{nodes.parquet, edges/*.parquet, graph_manifest.json, graph_history.jsonl}
 │   ├── metadata/{data_source_inventory.csv, object_graph.json,
 │   │             object_inventory.csv, labels.json}
 │   ├── labels/object_labels.parquet   # 对象级标签（object_type/object_id/key/value）
-│   ├── quality/{issues.csv, event_stream.json, governed_dataset.json}
+│   ├── quality/{issues.csv, event_stream.json, governed_dataset.json,
+│   │             concept_coverage.json, alignment_report.json}
 │   ├── classification/{rules.csv, result.csv}
 │   ├── metadata/concept_map.parquet          # 编码 → UMLS CUI
 │   └── quality/concept_coverage.json         # 概念覆盖率
