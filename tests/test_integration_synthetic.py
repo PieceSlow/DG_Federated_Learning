@@ -125,6 +125,14 @@ class PipelineIntegrationTest(unittest.TestCase):
         # 标签挂的是对象 ID，与图谱节点一致
         self.assertIn("Encounter:12", set(frame["object_id"]))
 
+    def test_sql_execution(self) -> None:
+        sql_path = self.settings.governance / "mapping" / "build_clinical_events.sql"
+        report_path = self.settings.governance / "quality" / "sql_execution_report.json"
+        self.assertTrue(sql_path.exists())
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["rows"], 11)
+
     def test_classification(self) -> None:
         base = self.settings.governance / "classification"
         rules = pd.read_csv(base / "rules.csv")

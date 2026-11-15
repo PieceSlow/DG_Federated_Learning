@@ -25,7 +25,9 @@ from governance.alignment import (
     targets_from_gold,
 )
 from governance.alignment.evaluate import evaluate
+from governance.alignment.sql import build_sql, validate_sql
 from governance.context import GovernanceContext, require_state
+from governance.text_notes import note_text_frame
 
 
 def _field(table: str, field: str, source_table: str, source_field: str,
@@ -123,6 +125,21 @@ def run(ctx: GovernanceContext) -> None:
     (ctx.settings.governance / "quality" / "alignment_report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
+    # SQL 生成 + SQLite 对账
+    try:
+        sql = build_sql(field_map)
+        (dest / "build_clinical_events.sql").write_text(sql, encoding="utf-8")
+        expected = {
+            str(key): int(value)
+            for key, value in ctx.clinical_events["event_type"].value_counts().items()
+        }
+        sql_report = validate_sql(sql, ctx.tables, note_text_frame(ctx), expected)
+    except Exception as exc:  # noqa: BLE001 - 生成失败进报告，不中断流水线
+        sql_report = {"status": "error", "error": str(exc)}
+    (ctx.settings.governance / "quality" / "sql_execution_report.json").write_text(
+        json.dumps(sql_report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     typed = record_map.copy()
     typed["hadm_id"] = pd.array(typed["hadm_id"], dtype="Int64")
     typed["stay_id"] = pd.array(typed["stay_id"], dtype="Int64")
@@ -139,11 +156,13 @@ def run(ctx: GovernanceContext) -> None:
                 "recall": report["recall"],
                 "top3_recall": report["top3_recall"],
             },
+            "sql_execution": sql_report,
         }
     )
     ctx.log(
         "字段对齐",
         f"人工确认映射 {len(field_map)} 条（gold）、记录级映射 {len(record_map)} 条；"
         f"匹配器生成 {len(selected)} 条候选映射，"
-        f"P={report['precision']:.2f} / R={report['recall']:.2f} / Top3 R={report['top3_recall']:.2f}。",
+        f"P={report['precision']:.2f} / R={report['recall']:.2f} / Top3 R={report['top3_recall']:.2f}；"
+        f"SQL 对账 {sql_report.get('status')}（{sql_report.get('rows', 0)} 行）。",
     )
