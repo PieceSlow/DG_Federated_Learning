@@ -37,6 +37,24 @@ DEFAULT_RESPONSES: dict[str, dict[str, Any]] = {
             {"code": "MISSING_TIME", "detail": "诊断表没有时间字段，事件时间需留空"},
             {"code": "ORPHAN_FK", "detail": "处方/检验的 hadm_id 可能不在住院表中"},
         ],
+    },
+    "graph_critic": {
+        "issues": [
+            {
+                "code": "GRAPH_MISSING_RELATION",
+                "severity": "warning",
+                "detail": "临床文书应挂到住院上，当前关系类型存在但计数偏低，建议核对 hadm_id 缺失",
+            },
+            {
+                "code": "GRAPH_ORPHAN_NODE",
+                "severity": "warning",
+                "detail": "患者对象存在零关系节点时，通常是住院表未覆盖该患者",
+            },
+        ],
+        "suggestions": [
+            "在 has_note 边上增加 hadm_id 非空校验，缺失时单独登记问题而非静默丢弃",
+            "对 Patient 增加 has_encounter 覆盖检查，输出未覆盖的患者数量",
+        ],
     }
 }
 

@@ -1,0 +1,176 @@
+"""图谱测试：对象模型、实例化、边表存储与质量规则。"""
+
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+import pandas as pd
+
+from governance.graph.build import build_graph, make_object_id
+from governance.graph.model import load_model
+from governance.graph.store import GraphStore
+from governance.graph.verify import verify
+
+
+def _tables() -> dict[str, pd.DataFrame]:
+    return {
+        "patients": pd.DataFrame(
+            {"subject_id": [1], "gender": ["F"], "anchor_age": [65], "anchor_year": [2150]}
+        ),
+        "admissions": pd.DataFrame(
+            {
+                "subject_id": [1],
+                "hadm_id": [11],
+                "admittime": ["2100-01-01 08:00:00"],
+                "dischtime": ["2100-01-05 12:00:00"],
+                "admission_type": ["EMERGENCY"],
+                "hospital_expire_flag": [0],
+            }
+        ),
+        "icustays": pd.DataFrame(
+            {
+                "subject_id": [1],
+                "hadm_id": [11],
+                "stay_id": [21],
+                "first_careunit": ["MICU"],
+                "last_careunit": ["MICU"],
+                "intime": ["2100-01-01 09:00:00"],
+                "outtime": ["2100-01-03 09:00:00"],
+            }
+        ),
+        "diagnoses_icd": pd.DataFrame(
+            {"subject_id": [1], "hadm_id": [11], "seq_num": [1], "icd_code": ["I10"], "icd_version": [10]}
+        ),
+        "procedures_icd": pd.DataFrame(
+            {
+                "subject_id": [1],
+                "hadm_id": [11],
+                "seq_num": [1],
+                "icd_code": ["0BH17EZ"],
+                "icd_version": [10],
+                "chartdate": ["2100-01-02"],
+            }
+        ),
+        "prescriptions": pd.DataFrame(
+            {
+                "subject_id": [1],
+                "hadm_id": [11],
+                "pharmacy_id": [501],
+                "starttime": ["2100-01-02 10:00:00"],
+                "drug": ["Aspirin"],
+                "formulary_drug_cd": ["ASPIRIN"],
+                "dose_val_rx": ["81"],
+            }
+        ),
+    }
+
+
+def _notes(hadm_id: int | None = 11) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "note_id": ["901"],
+            "subject_id": [1],
+            "hadm_id": [hadm_id],
+            "charttime": ["2100-01-05 10:00:00"],
+            "note_type": ["DS"],
+        }
+    )
+
+
+class ModelTest(unittest.TestCase):
+    def test_three_layers_and_relations(self) -> None:
+        model = load_model()
+        self.assertEqual(len(model.objects), 7)
+        self.assertEqual(len(model.relations), 6)
+        for spec in model.objects.values():
+            self.assertTrue(spec.keys, spec.name)
+            self.assertTrue(spec.source_table, spec.name)
+            self.assertIn(spec.sensitivity, {"L2", "L3"}, spec.name)
+        for relation in model.relations:
+            self.assertIn(relation.on, model.objects[relation.from_object].keys)
+
+    def test_object_id_is_stable(self) -> None:
+        self.assertEqual(make_object_id("Patient", [1]), "Patient:1")
+        self.assertEqual(make_object_id("Diagnosis", [1, 11, 2]), "Diagnosis:1:11:2")
+        self.assertIsNone(make_object_id("Encounter", [None]))
+
+
+class BuildTest(unittest.TestCase):
+    def test_node_and_edge_counts(self) -> None:
+        graph = build_graph(_tables(), _notes())
+        self.assertEqual(len(graph.nodes), 7)  # 1 patient + 1 encounter + 1 icu + 1 dx + 1 px + 1 rx + 1 note
+        self.assertEqual(graph.manifest["objects"]["Patient"], 1)
+        self.assertEqual(graph.manifest["objects"]["ClinicalNote"], 1)
+        self.assertEqual(sum(graph.manifest["relations"].values()), 6)
+        for frame in graph.edges.values():
+            self.assertIn("evidence", frame.columns)
+            self.assertTrue((frame["confidence"] == 1.0).all())
+
+    def test_missing_pharmacy_id_is_not_a_node(self) -> None:
+        tables = _tables()
+        tables["prescriptions"]["pharmacy_id"] = [None]
+        graph = build_graph(tables, _notes())
+        self.assertEqual(len(graph.nodes[graph.nodes.object_type == "Prescription"]), 0)
+
+    def test_notes_without_hadm_produce_no_edge(self) -> None:
+        graph = build_graph(_tables(), _notes(hadm_id=None))
+        self.assertEqual(len(graph.edges["has_note"]), 0)
+
+
+class StoreTest(unittest.TestCase):
+    def test_roundtrip_and_stale_edges_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = GraphStore(root)
+            graph = build_graph(_tables(), _notes())
+            store.write(graph)
+
+            self.assertTrue(store.nodes_path.exists())
+            self.assertEqual(len(store.read_nodes()), len(graph.nodes))
+            self.assertEqual(len(store.read_edges("has_diagnosis")), 1)
+            manifest = store.read_manifest()
+            self.assertEqual(manifest["objects"]["Patient"], 1)
+
+            # 重写时清掉不属于当前模型的旧文件；缺失的表对应空边表而非残留数据
+            (store.edges_dir / "obsolete.parquet").write_bytes(b"x")
+            tables = _tables()
+            tables.pop("procedures_icd")
+            store.write(build_graph(tables, _notes()))
+            self.assertFalse((store.edges_dir / "obsolete.parquet").exists())
+            self.assertEqual(len(store.read_edges("has_procedure")), 0)
+
+
+class VerifyTest(unittest.TestCase):
+    def test_clean_graph_has_no_issues(self) -> None:
+        graph = build_graph(_tables(), _notes())
+        self.assertEqual(verify(graph), [])
+
+    def test_dangling_edge_detected(self) -> None:
+        tables = _tables()
+        tables["icustays"]["hadm_id"] = [99]  # 住院 99 不存在
+        issues = verify(build_graph(tables, _notes()))
+        rules = {issue["rule"] for issue in issues}
+        self.assertIn("GRAPH_DANGLING_EDGE", rules)
+
+    def test_missing_relation_for_note_without_hadm(self) -> None:
+        issues = verify(build_graph(_tables(), _notes(hadm_id=None)))
+        self.assertIn("GRAPH_MISSING_RELATION", {issue["rule"] for issue in issues})
+
+    def test_temporal_conflict_detected(self) -> None:
+        tables = _tables()
+        tables["admissions"]["dischtime"] = ["2100-01-01 07:00:00"]  # 早于入院
+        issues = verify(build_graph(tables, _notes()))
+        self.assertIn("GRAPH_TEMPORAL_CONFLICT", {issue["rule"] for issue in issues})
+
+    def test_icu_window_outside_encounter(self) -> None:
+        tables = _tables()
+        tables["icustays"]["outtime"] = ["2100-02-01 09:00:00"]  # 晚于出院 1 天以上
+        issues = verify(build_graph(tables, _notes()))
+        details = [issue for issue in issues if issue["rule"] == "GRAPH_TEMPORAL_CONFLICT"]
+        self.assertTrue(any("ICU" in issue["detail"] for issue in details))
+
+
+if __name__ == "__main__":
+    unittest.main()

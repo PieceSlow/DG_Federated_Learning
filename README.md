@@ -24,7 +24,7 @@
 | 04 | 事件仓储 | 按 MEDS 目录落盘，写盘后重新读回再校验 | `eventstore/` |
 | 05 | 多源汇聚 | 统一事件表 + 患者 360 宽表 | `dataset/*.parquet` |
 | 06 | 字段对齐 | 字段级映射（33 条）+ 记录级血缘 | `mapping/*` |
-| 07 | 对象化 | 7 类对象、6 条关系、对象图谱 | `object_graph.json`、`object_inventory.csv` |
+| 07 | 对象化 | 7 类对象、6 条关系、节点/边实例、图谱自检 | `graph/nodes.parquet`、`graph/edges/*`、`object_graph.json` |
 | 08 | 标签化 | 对象/术语/章节/敏感级别/划分 5 个维度 | `labels.json` |
 | 09 | 分类分级 | 7 条分级规则 + 落地结果 | `classification/*.csv` |
 | 10 | 编目 | 资源/资产/服务/共享/开放五级目录 | `data_catalog.json/.md` |
@@ -136,6 +136,7 @@ output/
 ├── governance/                       # 治理资产
 │   ├── dataset/{clinical_events.parquet, patient_360.parquet}
 │   ├── mapping/{field_level.csv, record_level.parquet}
+│   ├── graph/{nodes.parquet, edges/*.parquet, graph_manifest.json}
 │   ├── metadata/{data_source_inventory.csv, object_graph.json,
 │   │             object_inventory.csv, labels.json}
 │   ├── quality/{issues.csv, event_stream.json, governed_dataset.json}
@@ -160,6 +161,7 @@ output/
 | 时间越界只标记不改写 | 出院带药、入院前用药是真实临床情况，静默修正会破坏可审计性 |
 | 聚合行用 subject 级血缘 | `patient_360` 无法一对一落到单条源记录，不伪造映射 |
 | 事件仓储与治理资产分开 | 前者是对外标准接口，后者是内部资产，混在一起会模糊共享边界 |
+| 边当表存 | 每种关系一张 parquet：可直接 join/查询、可加属性、可增量，不必部署图数据库 |
 
 ## 七、参考运行结果（100 人真实队列）
 

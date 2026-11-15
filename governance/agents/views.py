@@ -134,3 +134,17 @@ def graph_stats_view(graph: Mapping[str, Any]) -> dict[str, Any]:
 def requirement_view(text: str) -> dict[str, Any]:
     """业务需求视图：只有需求文字，不含数据。"""
     return {"requirement": text}
+
+
+def manifest_view(manifest: Mapping[str, Any]) -> dict[str, Any]:
+    """图谱 manifest 视图：对象/关系类型与计数，不含实例。"""
+    return {
+        "objects": [
+            {"object": name, "rows": int(rows)}
+            for name, rows in manifest.get("objects", {}).items()
+        ],
+        "relations": [
+            {"relation": name, "rows": int(rows)}
+            for name, rows in manifest.get("relations", {}).items()
+        ],
+    }

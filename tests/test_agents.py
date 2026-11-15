@@ -10,12 +10,14 @@ from pathlib import Path
 import pandas as pd
 
 from governance.agents.base import Agent, AgentResult, TraceWriter
+from governance.agents.graph_critic import GraphCriticAgent
 from governance.agents.prompts import load_prompt
 from governance.agents.profiler import SourceProfilerAgent
 from governance.agents.supervisor import Supervisor
 from governance.agents.views import (
     digest,
     graph_stats_view,
+    manifest_view,
     require_no_patient_data,
     schema_view,
     stats_view,
@@ -159,6 +161,26 @@ class ProfilerTest(unittest.TestCase):
         outcome = Supervisor().run(agent, self._payload())
         self.assertFalse(outcome.ok)
         self.assertIn("provider=off", outcome.history[0]["error"])
+
+
+class GraphCriticTest(unittest.TestCase):
+    def test_mock_critic_gives_issues_and_suggestions(self) -> None:
+        manifest = {
+            "objects": {"Patient": 100, "Encounter": 350, "ClinicalNote": 155},
+            "relations": {"has_encounter": 350, "has_note": 0},
+        }
+        payload = {"graph_stats_view": manifest_view(manifest)}
+        require_no_patient_data(payload)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            service = build_service(LLMConfig(provider="mock"), Path(tmp))
+            agent = GraphCriticAgent(llm=service)
+            result = agent.run(payload)
+
+        self.assertTrue(result.ok)
+        self.assertEqual(len(result.artifacts["issues"]), 2)
+        self.assertEqual(len(result.artifacts["suggestions"]), 2)
+        self.assertEqual(result.trace.agent, "GraphCriticAgent")
 
 
 if __name__ == "__main__":

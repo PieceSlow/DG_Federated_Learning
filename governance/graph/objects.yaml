@@ -1,0 +1,99 @@
+version: "1.0"
+
+# 概念层：业务对象是什么（人 / 物 / 关系）
+concept:
+  Patient: "接受诊疗的主体（人）"
+  Encounter: "一次住院过程，是诊疗事件的容器"
+  ICUStay: "住院期间的一次 ICU 停留"
+  ClinicalNote: "出院小结等非结构化文书"
+  Diagnosis: "住院期间的诊断编码"
+  Prescription: "住院期间的用药医嘱"
+  Procedure: "住院期间的操作编码"
+
+# 逻辑层：主键、属性、敏感级别
+logical:
+  Patient:
+    keys: [subject_id]
+    attributes: [gender, anchor_age, anchor_year]
+    sensitivity: L3
+  Encounter:
+    keys: [hadm_id]
+    attributes: [admittime, dischtime, admission_type, hospital_expire_flag]
+    sensitivity: L3
+  ICUStay:
+    keys: [stay_id]
+    attributes: [intime, outtime, first_careunit, last_careunit]
+    sensitivity: L3
+  ClinicalNote:
+    keys: [note_id]
+    attributes: [charttime, note_type]
+    sensitivity: L3
+  Diagnosis:
+    keys: [subject_id, hadm_id, seq_num]
+    attributes: [icd_code, icd_version]
+    sensitivity: L2
+  Prescription:
+    keys: [subject_id, hadm_id, pharmacy_id]
+    attributes: [starttime, drug, formulary_drug_cd, dose_val_rx]
+    sensitivity: L2
+  Procedure:
+    keys: [subject_id, hadm_id, seq_num]
+    attributes: [chartdate, icd_code, icd_version]
+    sensitivity: L2
+
+# 物理层：落在哪张表、通过什么接口取数（逻辑汇聚，不复制数据）
+physical:
+  Patient:
+    source_table: patients
+    interface: "hosp/patients"
+  Encounter:
+    source_table: admissions
+    interface: "hosp/admissions"
+  ICUStay:
+    source_table: icustays
+    interface: "icu/icustays"
+  ClinicalNote:
+    source_table: discharge
+    interface: "note/discharge"
+  Diagnosis:
+    source_table: diagnoses_icd
+    interface: "hosp/diagnoses_icd"
+  Prescription:
+    source_table: prescriptions
+    interface: "hosp/prescriptions"
+  Procedure:
+    source_table: procedures_icd
+    interface: "hosp/procedures_icd"
+
+# 关系：每条边落成一张表，带证据与置信度
+relations:
+  - name: has_encounter
+    from: Patient
+    to: Encounter
+    "on": subject_id
+    cardinality: "1:N"
+  - name: has_icu_stay
+    from: Encounter
+    to: ICUStay
+    "on": hadm_id
+    cardinality: "1:N"
+  - name: has_diagnosis
+    from: Encounter
+    to: Diagnosis
+    "on": hadm_id
+    cardinality: "1:N"
+  - name: has_prescription
+    from: Encounter
+    to: Prescription
+    "on": hadm_id
+    cardinality: "1:N"
+  - name: has_procedure
+    from: Encounter
+    to: Procedure
+    "on": hadm_id
+    cardinality: "1:N"
+  - name: has_note
+    from: Encounter
+    to: ClinicalNote
+    "on": hadm_id
+    cardinality: "1:N"

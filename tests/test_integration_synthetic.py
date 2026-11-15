@@ -86,6 +86,18 @@ class PipelineIntegrationTest(unittest.TestCase):
         self.assertEqual(set(cats), {"resource", "asset", "service", "share", "open"})
         self.assertTrue((self.settings.governance / "catalog" / "data_catalog.md").exists())
 
+    def test_graph_instances(self) -> None:
+        graph_dir = self.settings.governance / "graph"
+        nodes = pd.read_parquet(graph_dir / "nodes.parquet")
+        manifest = json.loads((graph_dir / "graph_manifest.json").read_text(encoding="utf-8"))
+        edge_files = sorted((graph_dir / "edges").glob("*.parquet"))
+        self.assertEqual(len(edge_files), 6)
+        # 3 患者 + 3 住院 + 3 ICU + 4 诊断 + 3 处方 + 2 操作 + 2 文书
+        self.assertEqual(len(nodes), 20)
+        self.assertEqual(sum(manifest["relations"].values()), 17)
+        self.assertEqual(manifest["objects"]["ClinicalNote"], 2)
+        self.assertEqual(self.ctx.stats["graph_issues"], 0)
+
     def test_classification(self) -> None:
         base = self.settings.governance / "classification"
         rules = pd.read_csv(base / "rules.csv")
