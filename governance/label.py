@@ -21,6 +21,13 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from governance.context import GovernanceContext, require_state
+from governance.labels import (
+    ObjectLabelStore,
+    compute_labels,
+    definitions_catalog,
+    load_definitions,
+)
+from governance.text_notes import note_frame
 
 #: 敏感级别：对象类型 → 级别
 SENSITIVITY = {
@@ -186,12 +193,43 @@ def run(ctx: GovernanceContext) -> None:
         },
         "note": "标签描述数据语义与敏感级别，不包含任何患者直接标识。",
     }
+    version, definitions = load_definitions()
+    object_labels = compute_labels(
+        ctx.tables,
+        notes=note_frame(ctx),
+        manual_path=ctx.settings.manual_labels,
+        definitions=definitions,
+        version=version,
+    )
+    ObjectLabelStore(ctx.settings.governance / "labels").write(object_labels)
+    counts = (
+        {str(k): int(v) for k, v in object_labels.groupby("key").size().items()}
+        if not object_labels.empty
+        else {}
+    )
+    labels["object_labels"] = {
+        "version": version,
+        "definitions": definitions_catalog(definitions),
+        "counts": counts,
+        "manual_entries": int((object_labels["source"] == "manual").sum())
+        if not object_labels.empty
+        else 0,
+        "note": "标签打在对象上（object_type/object_id），value 为字符串",
+    }
+    ctx.object_labels = object_labels
+    ctx.stats["object_labels"] = {
+        "rows": int(len(object_labels)),
+        "keys": counts,
+        "manual": labels["object_labels"]["manual_entries"],
+    }
+
     ctx.labels = labels
     (ctx.settings.governance / "metadata" / "labels.json").write_text(
         json.dumps(labels, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     ctx.log(
         "标签化",
-        "建立 5 个标签维度（对象类型 / 术语体系 / 语义章节 / 敏感级别 / 划分），"
-        f"覆盖 {len(events)} 条事件。",
+        "建立 6 个技术标签维度（对象类型 / 术语体系 / 语义章节 / 敏感级别 / 划分 / 语义类型）"
+        f"覆盖 {len(events)} 条事件；对象级标签 {len(object_labels)} 条"
+        f"（{', '.join(counts) if counts else '无'}）。",
     )

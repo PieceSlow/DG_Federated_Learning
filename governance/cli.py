@@ -48,6 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="图谱写入模式：full 整图重建 / incremental 增量 upsert")
     parser.add_argument("--graph-delete-missing", action="store_true",
                         help="增量模式下删除本轮未见到的节点/边（默认保留）")
+    parser.add_argument("--manual-labels", type=Path, default=None,
+                        help="手动标签 CSV（object_type,object_id,key,value）")
     parser.add_argument("--list-stages", action="store_true", help="列出阶段及其依赖后退出")
     return parser
 
@@ -78,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
         max_notes_per_subject=args.max_notes_per_subject,
         graph_mode=args.graph_mode,
         graph_delete_missing=args.graph_delete_missing,
+        manual_labels=args.manual_labels,
     )
     llm = None
     if args.llm != "off":

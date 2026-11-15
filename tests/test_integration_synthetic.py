@@ -111,6 +111,20 @@ class PipelineIntegrationTest(unittest.TestCase):
         self.assertGreater(
             self.ctx.issue_counts.get("TEXT_CODE_MISMATCH|warning", 0), 0)
 
+    def test_object_labels(self) -> None:
+        frame = pd.read_parquet(self.settings.governance / "labels" / "object_labels.parquet")
+        self.assertTrue(
+            {"elderly", "long_stay", "high_followup_priority", "icu_long_stay"}
+            <= set(frame["key"])
+        )
+        labels = json.loads(
+            (self.settings.governance / "metadata" / "labels.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(labels["object_labels"]["counts"]["elderly"], 2)
+        self.assertEqual(labels["object_labels"]["counts"]["high_followup_priority"], 1)
+        # 标签挂的是对象 ID，与图谱节点一致
+        self.assertIn("Encounter:12", set(frame["object_id"]))
+
     def test_classification(self) -> None:
         base = self.settings.governance / "classification"
         rules = pd.read_csv(base / "rules.csv")

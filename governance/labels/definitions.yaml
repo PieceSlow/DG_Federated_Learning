@@ -1,0 +1,39 @@
+version: "1.0"
+
+# 标签直接打在对象上（object_type + object_id），value 以字符串保存。
+# 规则用 pandas DataFrame.eval 计算，可用列见 labels/engine.py 的 feature 构建。
+labels:
+  - key: elderly
+    object: Patient
+    type: fact
+    rule: "anchor_age >= 65"
+    value: true
+    description: "65 岁及以上"
+
+  - key: long_stay
+    object: Encounter
+    type: derived
+    rule: "los_days > 7"
+    value: true
+    description: "住院超过 7 天"
+
+  - key: polypharmacy
+    object: Encounter
+    type: derived
+    rule: "n_prescriptions >= 5"
+    value: true
+    description: "住院期间处方条目 >= 5"
+
+  - key: high_followup_priority
+    object: Encounter
+    type: profile
+    rule: "patient_elderly & label_long_stay"
+    value: true
+    description: "老年且长住院：建议随访资源优先（业务画像示例）"
+
+  - key: icu_long_stay
+    object: ICUStay
+    type: derived
+    rule: "los_days > 3"
+    value: true
+    description: "ICU 停留超过 3 天"

@@ -66,6 +66,7 @@ class Settings:
     max_notes_per_subject: int = 3
     graph_mode: str = "full"
     graph_delete_missing: bool = False
+    manual_labels: Path | None = None
 
     @property
     def eventstore(self) -> Path:

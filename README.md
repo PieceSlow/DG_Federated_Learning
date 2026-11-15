@@ -26,7 +26,7 @@
 | 06 | 字段对齐 | 字段级映射（33 条）+ 记录级血缘 | `mapping/*` |
 | 07 | 概念归一 | UMLS 编码/药名/检验名 → 概念（CUI）与语义类型 | `concept_map.parquet`、`concept_coverage.json` |
 | 08 | 对象化 | 智能体提案对象/关系 → 本地实例化（可回退确定性模型）+ 图谱自检 | `graph/nodes.parquet`、`graph/edges/*`、`object_graph.json` |
-| 09 | 标签化 | 对象/术语/章节/敏感级别/划分 5 个维度 | `labels.json` |
+| 09 | 标签化 | 6 个技术维度 + 对象级业务标签（事实/派生/画像/手动） | `labels.json`、`labels/object_labels.parquet` |
 | 10 | 分类分级 | 7 条分级规则 + 落地结果 | `classification/*.csv` |
 | 11 | 编目 | 资源/资产/服务/共享/开放五级目录 | `data_catalog.json/.md` |
 | 12 | 报告 | 事件流与治理后数据集的质量汇总 | `quality/*.json`、`run_summary.json` |
@@ -134,6 +134,7 @@ Windows 一键脚本：`powershell -ExecutionPolicy Bypass -File scripts\run_all
 | `--llm-max-calls` | 200 | API 调用次数上限 |
 | `--graph-mode` | `full` | 图谱写入模式：`full` 整图重建 / `incremental` 增量 upsert |
 | `--graph-delete-missing` | false | 增量模式下删除本轮未见到的节点/边 |
+| `--manual-labels` | 无 | 手动标签 CSV（`object_type,object_id,key,value`） |
 | `--list-stages` | — | 打印阶段与依赖后退出 |
 
 ## 五、产物布局
@@ -149,6 +150,7 @@ output/
 │   ├── graph/{nodes.parquet, edges/*.parquet, graph_manifest.json, graph_history.jsonl}
 │   ├── metadata/{data_source_inventory.csv, object_graph.json,
 │   │             object_inventory.csv, labels.json}
+│   ├── labels/object_labels.parquet   # 对象级标签（object_type/object_id/key/value）
 │   ├── quality/{issues.csv, event_stream.json, governed_dataset.json}
 │   ├── classification/{rules.csv, result.csv}
 │   ├── metadata/concept_map.parquet          # 编码 → UMLS CUI

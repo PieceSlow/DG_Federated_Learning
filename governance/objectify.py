@@ -26,6 +26,7 @@ from governance.graph.agentic import build_with_agents
 from governance.graph.build import build_concept_layer, build_graph
 from governance.graph.store import GraphStore
 from governance.graph.verify import verify as verify_graph
+from governance.text_notes import note_frame
 
 #: 对象关系（一对多），与上图一致
 CONCEPT_RELATIONS_SPEC = [
@@ -69,7 +70,7 @@ def _relations_from_graph(graph_data) -> list[dict]:
 
 
 def run(ctx: GovernanceContext) -> None:
-    notes = _note_frame(ctx)
+    notes = note_frame(ctx)
     graph_data = None
     if ctx.llm is not None and ctx.llm.config.provider != "off":
         graph_data, errors = build_with_agents(ctx, notes)
@@ -150,26 +151,3 @@ def run(ctx: GovernanceContext) -> None:
         f"图谱校验发现 {len(graph_issues)} 项问题。",
     )
 
-
-def _note_frame(ctx: GovernanceContext) -> pd.DataFrame:
-    """从事件流还原文书对象（文本对象不在结构化源表里）。"""
-    rows: list[dict] = []
-    seen: set[str] = set()
-    for event in ctx.events:
-        if event.get("code") != "NOTE//DISCHARGE":
-            continue
-        record = str(event.get("source_record_id") or "")
-        note_id = record.split(":", 1)[1] if ":" in record else record
-        if not note_id or note_id in seen:
-            continue
-        seen.add(note_id)
-        rows.append(
-            {
-                "note_id": note_id,
-                "subject_id": event.get("subject_id"),
-                "hadm_id": event.get("hadm_id"),
-                "charttime": event.get("time"),
-                "note_type": "DS",
-            }
-        )
-    return pd.DataFrame(rows, columns=["note_id", "subject_id", "hadm_id", "charttime", "note_type"])
