@@ -16,7 +16,7 @@ class StageRegistryTest(unittest.TestCase):
             [stage.key for stage in pipeline.STAGES],
             [
                 "ingest", "standardize", "quality", "materialize", "assemble",
-                "align", "objectify", "label", "classify", "catalog", "report",
+                "align", "concept", "objectify", "label", "classify", "catalog", "report",
             ],
         )
 

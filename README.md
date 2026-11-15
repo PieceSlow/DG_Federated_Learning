@@ -14,7 +14,7 @@
 
 ---
 
-## 一、流水线的 11 个阶段
+## 一、流水线的 12 个阶段
 
 | # | 阶段 | 做什么 | 关键产物 |
 |---|---|---|---|
@@ -24,11 +24,12 @@
 | 04 | 事件仓储 | 按 MEDS 目录落盘，写盘后重新读回再校验 | `eventstore/` |
 | 05 | 多源汇聚 | 统一事件表 + 患者 360 宽表 | `dataset/*.parquet` |
 | 06 | 字段对齐 | 字段级映射（33 条）+ 记录级血缘 | `mapping/*` |
-| 07 | 对象化 | 7 类对象、6 条关系、节点/边实例、图谱自检 | `graph/nodes.parquet`、`graph/edges/*`、`object_graph.json` |
-| 08 | 标签化 | 对象/术语/章节/敏感级别/划分 5 个维度 | `labels.json` |
-| 09 | 分类分级 | 7 条分级规则 + 落地结果 | `classification/*.csv` |
-| 10 | 编目 | 资源/资产/服务/共享/开放五级目录 | `data_catalog.json/.md` |
-| 11 | 报告 | 事件流与治理后数据集的质量汇总 | `quality/*.json`、`run_summary.json` |
+| 07 | 概念归一 | UMLS 编码/药名/检验名 → 概念（CUI）与语义类型 | `concept_map.parquet`、`concept_coverage.json` |
+| 08 | 对象化 | 7 类对象、6 条关系、节点/边实例、图谱自检 | `graph/nodes.parquet`、`graph/edges/*`、`object_graph.json` |
+| 09 | 标签化 | 对象/术语/章节/敏感级别/划分 5 个维度 | `labels.json` |
+| 10 | 分类分级 | 7 条分级规则 + 落地结果 | `classification/*.csv` |
+| 11 | 编目 | 资源/资产/服务/共享/开放五级目录 | `data_catalog.json/.md` |
+| 12 | 报告 | 事件流与治理后数据集的质量汇总 | `quality/*.json`、`run_summary.json` |
 
 ```text
 MIMIC-IV / Note（只读）
@@ -41,11 +42,13 @@ MIMIC-IV / Note（只读）
                                               │
                               06 对齐（字段级/记录级血缘）
                                               │
-                              07 对象化（对象图谱）
+                              07 概念归一（UMLS，无缓存则跳过）
                                               │
-                              08 标签化（语义 + 敏感级别）
+                              08 对象化（对象图谱）
                                               │
-                              09 分级 ──► 10 编目 ──► 11 报告
+                              09 标签化（语义 + 敏感级别）
+                                              │
+                              10 分级 ──► 11 编目 ──► 12 报告
 ```
 
 阶段之间通过同一个 `GovernanceContext` 传递状态；每个阶段声明自己依赖哪些前置结果，
@@ -58,6 +61,7 @@ code_repo/
 ├── run.py                      # 唯一入口
 ├── governance/
 │   ├── pipeline.py             # 阶段编排（LangGraph StateGraph）
+│   ├── umls/                   # UMLS 预处理缓存与概念链接
 │   ├── agents/                 # 智能体基座（M1）：协议、视图、Supervisor
 │   ├── llm/                    # LLM 接入：provider/缓存/预算/审计
 │   ├── prompts/                # 各 Agent 的 prompt（YAML，带版本）
@@ -141,6 +145,8 @@ output/
 │   │             object_inventory.csv, labels.json}
 │   ├── quality/{issues.csv, event_stream.json, governed_dataset.json}
 │   ├── classification/{rules.csv, result.csv}
+│   ├── metadata/concept_map.parquet          # 编码 → UMLS CUI
+│   └── quality/concept_coverage.json         # 概念覆盖率
 │   └── catalog/{data_catalog.json, data_catalog.md}
 ├── audit/audit_log.csv               # 每阶段动作、计数、时间
 └── run_summary.json                  # 阶段耗时与规模摘要
@@ -162,6 +168,7 @@ output/
 | 聚合行用 subject 级血缘 | `patient_360` 无法一对一落到单条源记录，不伪造映射 |
 | 事件仓储与治理资产分开 | 前者是对外标准接口，后者是内部资产，混在一起会模糊共享边界 |
 | 边当表存 | 每种关系一张 parquet：可直接 join/查询、可加属性、可增量，不必部署图数据库 |
+| 概念层用 UMLS | 跨中心对齐需要统一概念；UMLS 只在本地缓存，不联网、不外发 |
 
 ## 七、参考运行结果（100 人真实队列）
 

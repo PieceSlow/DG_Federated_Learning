@@ -1,12 +1,12 @@
 """治理流水线编排（LangGraph StateGraph）。
 
-11 个阶段各是一个节点，共享同一个 :class:`GovernanceContext`；依赖关系在节点的
+12 个阶段各是一个节点，共享同一个 :class:`GovernanceContext`；依赖关系在节点的
 ``requires`` 里声明，运行时先校验再执行，缺前置时直接说明缺什么。
 
 ```text
 01 数据接入 → 02 组织与标准化 → 03 质量校验 → 04 事件仓储
-   → 05 多源汇聚 → 06 字段对齐 → 07 对象化 → 08 标签化
-   → 09 分类分级 → 10 编目 → 11 质量报告
+   → 05 多源汇聚 → 06 字段对齐 → 07 概念归一 → 08 对象化 → 09 标签化
+   → 10 分类分级 → 11 编目 → 12 质量报告
 ```
 
 用图而不是一个 ``main()``：任意阶段可单独重跑（``--stages``），每个节点的输入输出
@@ -25,6 +25,7 @@ from governance import (
     assemble,
     catalog,
     classify,
+    concept,
     ingest,
     label,
     materialize,
@@ -54,12 +55,13 @@ STAGES: tuple[Stage, ...] = (
     Stage("materialize", "04 事件仓储落盘", "写 MEDS 事件仓储并读回复验", materialize.run, ("events",)),
     Stage("assemble", "05 多源汇聚", "统一事件表 + 患者 360 宽表", assemble.run, ("tables", "events")),
     Stage("align", "06 字段对齐", "字段级与记录级映射、血缘", align.run, ("clinical_events", "patient_360")),
-    Stage("objectify", "07 对象化", "对象模型、关系与对象图谱", objectify.run, ("tables",)),
-    Stage("label", "08 标签化", "对象/术语/章节/敏感级别/划分五类标签", label.run, ("clinical_events",)),
-    Stage("classify", "09 分类分级", "分级规则与落地结果", classify.run, ("clinical_events", "patient_360")),
-    Stage("catalog", "10 编目", "资源/资产/服务/共享/开放五级目录", catalog.run,
+    Stage("concept", "07 概念归一", "UMLS 概念映射与覆盖率", concept.run, ("tables",)),
+    Stage("objectify", "08 对象化", "对象模型、关系与对象图谱", objectify.run, ("tables",)),
+    Stage("label", "09 标签化", "对象/术语/章节/敏感级别/划分五类标签", label.run, ("clinical_events",)),
+    Stage("classify", "10 分类分级", "分级规则与落地结果", classify.run, ("clinical_events", "patient_360")),
+    Stage("catalog", "11 编目", "资源/资产/服务/共享/开放五级目录", catalog.run,
           ("clinical_events", "patient_360")),
-    Stage("report", "11 质量报告", "事件流与治理后数据集的质量汇总", report.run,
+    Stage("report", "12 质量报告", "事件流与治理后数据集的质量汇总", report.run,
           ("clinical_events", "patient_360")),
 )
 
