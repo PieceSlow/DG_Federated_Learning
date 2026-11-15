@@ -98,6 +98,19 @@ class PipelineIntegrationTest(unittest.TestCase):
         self.assertEqual(manifest["objects"]["ClinicalNote"], 2)
         self.assertEqual(self.ctx.stats["graph_issues"], 0)
 
+    def test_text_assertion_and_consistency(self) -> None:
+        events = pq.read_table(self.settings.eventstore / "data" / "events.parquet").to_pandas()
+        self.assertIn("assertion", events.columns)
+        self.assertTrue(set(events["assertion"].dropna()) <= {
+            "present", "negated", "family", "historical", "hypothetical"})
+
+        self.assertGreater(
+            self.ctx.issue_counts.get("TEXT_DRUG_MISMATCH|warning", 0), 0)
+        self.assertGreater(
+            self.ctx.issue_counts.get("TEXT_SECTION_MISSING|warning", 0), 0)
+        self.assertGreater(
+            self.ctx.issue_counts.get("TEXT_CODE_MISMATCH|warning", 0), 0)
+
     def test_classification(self) -> None:
         base = self.settings.governance / "classification"
         rules = pd.read_csv(base / "rules.csv")

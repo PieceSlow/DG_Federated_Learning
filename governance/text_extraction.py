@@ -7,7 +7,8 @@
 * 每份小结产出一条 ``NOTE//DISCHARGE`` 事件携带原文，每个非空章节产出一条
   ``NOTE_SECTION//<KEY>``；
 * 出院诊断段落逐行产出 ``NOTE_DIAGNOSIS//DISCHARGE``；
-* 出院用药段落对编号行解析"药名 + 剂量"，产出 ``NOTE_MEDICATION//<NAME>``。
+* 出院用药段落对编号行解析"药名 + 剂量"，产出 ``NOTE_MEDICATION//<NAME>``；
+* 每条诊断/用药行附带断言标签：present / negated / family / historical / hypothetical。
 
 全部规则化，无网络调用、无模型调用。
 """
@@ -49,6 +50,22 @@ DOSE_RE = re.compile(
 MAX_NOTE_CHARS = 20_000
 MAX_SECTION_CHARS = 4_000
 MAX_LINE_CHARS = 500
+
+#: 断言线索（顺序即优先级：否定 > 家族史 > 历史性 > 假设）
+ASSERTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("negated", re.compile(r"\b(no|not|without|denies|denied|never|negative for|no evidence of|absent)\b", re.IGNORECASE)),
+    ("family", re.compile(r"\b(family history|mother|father|sibling|parent|brother|sister)\b", re.IGNORECASE)),
+    ("historical", re.compile(r"\b(history of|prior|previous|past medical history)\b", re.IGNORECASE)),
+    ("hypothetical", re.compile(r"\b(if|should|would|possible|rule out|suspect)\b", re.IGNORECASE)),
+)
+
+
+def detect_assertion(text: str) -> str:
+    """给诊断/用药行打断言标签；单标签，优先级见 ``ASSERTION_PATTERNS``。"""
+    for name, pattern in ASSERTION_PATTERNS:
+        if pattern.search(text or ""):
+            return name
+    return "present"
 
 
 def _section_key(header: str) -> str:
@@ -106,7 +123,8 @@ def extract_note_events(note_text: str, max_medications: int = 40) -> list[dict[
             continue
         key = _section_key(header)
         extracted.append(
-            {"code": f"NOTE_SECTION//{key}", "text_value": body[:MAX_SECTION_CHARS]}
+            {"code": f"NOTE_SECTION//{key}", "text_value": body[:MAX_SECTION_CHARS],
+             "assertion": "present"}
         )
 
         if header == "DISCHARGE DIAGNOSIS":
@@ -114,7 +132,9 @@ def extract_note_events(note_text: str, max_medications: int = 40) -> list[dict[
                 cleaned = _clean_line(line)
                 if cleaned and not re.fullmatch(r"[\d.\-–]+", cleaned):
                     extracted.append(
-                        {"code": "NOTE_DIAGNOSIS//DISCHARGE", "text_value": cleaned[:MAX_LINE_CHARS]}
+                        {"code": "NOTE_DIAGNOSIS//DISCHARGE",
+                         "text_value": cleaned[:MAX_LINE_CHARS],
+                         "assertion": detect_assertion(cleaned)}
                     )
 
         if header == "DISCHARGE MEDICATIONS":
@@ -130,6 +150,8 @@ def extract_note_events(note_text: str, max_medications: int = 40) -> list[dict[
                     {
                         "code": f"NOTE_MEDICATION//{_drug_slug(drug)}",
                         "text_value": _clean_line(numbered.group(2))[:MAX_LINE_CHARS],
+                        "assertion": detect_assertion(line),
+                        "name": drug,
                     }
                 )
                 count += 1

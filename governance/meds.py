@@ -67,6 +67,7 @@ def event_store_schema() -> pa.Schema:
             pa.field("source_record_id", pa.string(), nullable=True),
             pa.field("mapping_version", pa.string(), nullable=True),
             pa.field("extractor", pa.string(), nullable=True),
+            pa.field("assertion", pa.string(), nullable=True),
         ]
     )
 
@@ -92,6 +93,9 @@ def events_to_frame(events: list[dict[str, Any]]) -> pd.DataFrame:
     frame["stay_id"] = pd.array(frame["stay_id"], dtype="Int64")
     frame["numeric_value"] = pd.to_numeric(frame["numeric_value"], errors="coerce").astype("float32")
     frame["text_value"] = frame["text_value"].astype("object")
+    if "assertion" not in frame.columns:
+        frame["assertion"] = "present"
+    frame["assertion"] = frame["assertion"].fillna("present").astype("object")
     frame["time"] = pd.to_datetime(frame["time"], errors="coerce")
     return frame.sort_values(
         ["subject_id", "time"], na_position="first", kind="stable"
@@ -109,7 +113,7 @@ def dataset_metadata() -> dict[str, Any]:
         "license": "PhysioNet Credentialed Health Data License v1.5.0",
         "description": "Local only. Derived row-level data must not be redistributed.",
         "raw_source_id_columns": ["hadm_id", "stay_id", "source_record_id"],
-        "other_extension_columns": ["source_table", "mapping_version", "extractor"],
+        "other_extension_columns": ["source_table", "mapping_version", "extractor", "assertion"],
     }
 
 

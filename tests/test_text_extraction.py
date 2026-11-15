@@ -7,6 +7,7 @@ import unittest
 from governance.text_extraction import (
     _drug_slug,
     _section_key,
+    detect_assertion,
     extract_note_events,
     split_sections,
 )
@@ -101,6 +102,40 @@ class ExtractNoteEventsTest(unittest.TestCase):
         self.assertTrue(meds)
         for event in meds:
             self.assertLessEqual(len(event["text_value"]), 500)
+
+
+class AssertionTest(unittest.TestCase):
+    def test_negated(self) -> None:
+        for text in ("No chest pain", "Patient denies fever", "Without dyspnea", "Negative for influenza"):
+            self.assertEqual(detect_assertion(text), "negated", text)
+
+    def test_family(self) -> None:
+        for text in ("Family history of diabetes", "Mother with hypertension"):
+            self.assertEqual(detect_assertion(text), "family", text)
+
+    def test_historical(self) -> None:
+        for text in ("History of MI", "Prior stroke"):
+            self.assertEqual(detect_assertion(text), "historical", text)
+
+    def test_hypothetical(self) -> None:
+        for text in ("If fever develops", "Rule out pneumonia"):
+            self.assertEqual(detect_assertion(text), "hypothetical", text)
+
+    def test_present(self) -> None:
+        self.assertEqual(detect_assertion("Chest pain"), "present")
+
+    def test_events_carry_assertion(self) -> None:
+        note = (
+            "Discharge Diagnosis:\n"
+            "1. Acute myocardial infarction\n"
+            "2. No pneumonia\n"
+            "Discharge Medications:\n"
+            "1. Aspirin 81 mg PO daily\n"
+        )
+        events = extract_note_events(note)
+        self.assertTrue(all("assertion" in event for event in events))
+        diagnoses = [event for event in events if event["code"] == "NOTE_DIAGNOSIS//DISCHARGE"]
+        self.assertEqual(diagnoses[1]["assertion"], "negated")
 
 
 class DrugSlugTest(unittest.TestCase):

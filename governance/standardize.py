@@ -23,7 +23,7 @@ from governance.config import resolve_data_file
 from governance.context import GovernanceContext
 from governance.ingest import scan_for_subjects
 from governance.meds import MAPPING_VERSION
-from governance.text_extraction import extract_note_events
+from governance.text_extraction import extract_note_events, split_sections
 
 
 def _index_objects(ctx: GovernanceContext) -> None:
@@ -131,6 +131,7 @@ def _event(
     stay: int | None = None,
     text: str | None = None,
     extractor: str = "structured",
+    assertion: str = "present",
 ) -> None:
     stamp = pd.to_datetime(when, errors="coerce") if when is not None else None
     if stamp is not None and pd.isna(stamp):
@@ -148,6 +149,7 @@ def _event(
             "source_record_id": record_id,
             "mapping_version": MAPPING_VERSION,
             "extractor": extractor,
+            "assertion": assertion,
         }
     )
 
@@ -293,6 +295,7 @@ def _extract_text(ctx: GovernanceContext) -> None:
 
     objects = ctx.objects
     note_events = 0
+    note_records: list[dict] = []
     for _, row in notes.iterrows():
         when = row["charttime"] if pd.notna(row["charttime"]) else row["storetime"]
         hadm = int(row.hadm_id) if pd.notna(row.hadm_id) else None
@@ -312,14 +315,43 @@ def _extract_text(ctx: GovernanceContext) -> None:
             extractor="note_rules:v1",
         )
         ctx.events.append(
-            {**common, "code": "NOTE//DISCHARGE", "numeric_value": None, "text_value": text[:20_000]}
+            {**common, "code": "NOTE//DISCHARGE", "numeric_value": None,
+             "text_value": text[:20_000], "assertion": "present"}
         )
         note_events += 1
+        diagnosis_lines: list[str] = []
+        medication_names: list[str] = []
         for item in extract_note_events(text):
+            if item["code"] == "NOTE_DIAGNOSIS//DISCHARGE":
+                diagnosis_lines.append(item["text_value"])
+            elif item["code"].startswith("NOTE_MEDICATION//"):
+                medication_names.append(item.get("name") or item["text_value"])
             ctx.events.append(
-                {**common, "code": item["code"], "numeric_value": None, "text_value": item["text_value"]}
+                {
+                    **common,
+                    "code": item["code"],
+                    "numeric_value": None,
+                    "text_value": item["text_value"],
+                    "assertion": item.get("assertion", "present"),
+                }
             )
             note_events += 1
+        note_records.append(
+            {
+                "subject_id": int(row.subject_id),
+                "note_id": str(row.note_id),
+                "diagnoses": diagnosis_lines,
+                "medications": medication_names,
+            }
+        )
+        sections = split_sections(text)
+        for header in REQUIRED_NOTE_SECTIONS:
+            if not sections.get(header):
+                ctx.add_issue(
+                    "TEXT_SECTION_MISSING", "warning", "discharge",
+                    f"出院小结缺少必需章节: {header}",
+                    subject=int(row.subject_id), record=f"discharge:{row.note_id}",
+                )
         if when is not None and hadm in objects["windows"]:
             admit, disch = objects["windows"][hadm]
             if pd.notna(disch) and when > disch:
@@ -327,6 +359,7 @@ def _extract_text(ctx: GovernanceContext) -> None:
                               "出院小结时间晚于出院时间",
                               subject=int(row.subject_id), record=f"discharge:{row.note_id}")
 
+    _check_text_consistency(ctx, note_records)
     ctx.stats.update(
         {
             "notes_used": int(len(notes)),
@@ -365,3 +398,87 @@ def run(ctx: GovernanceContext) -> None:
         f"使用确定性规则，未调用大模型。",
     )
     ctx.log("组织与标准化", f"累计生成 {len(ctx.events)} 条候选事件。")
+
+
+#: 出院小结必须具备的章节（缺失记 TEXT_SECTION_MISSING）
+REQUIRED_NOTE_SECTIONS = (
+    "HISTORY OF PRESENT ILLNESS",
+    "DISCHARGE DIAGNOSIS",
+    "DISCHARGE MEDICATIONS",
+)
+
+_STOPWORDS = {
+    "with", "without", "from", "this", "that", "have", "been", "were", "which",
+    "patient", "years", "year", "history", "left", "right", "other", "status",
+}
+
+
+def _normalize(text: str) -> str:
+    return re.sub(r"[^a-z0-9 ]+", " ", str(text).lower()).strip()
+
+
+def _tokens(text: str) -> set[str]:
+    return {
+        word for word in _normalize(text).split()
+        if len(word) >= 4 and word not in _STOPWORDS
+    }
+
+
+def _check_text_consistency(ctx: GovernanceContext, records: list[dict]) -> None:
+    """文本与结构化编码一致性：只标记、不改写。
+
+    用药：出院用药名是否出现在该患者的结构化处方里；
+    诊断：出院诊断文本与结构化 ICD 描述是否有词重合。
+    """
+    if not records:
+        return
+    tables = ctx.tables
+
+    structured_drugs: dict[int, set[str]] = {}
+    prescriptions = tables.get("prescriptions")
+    if prescriptions is not None and "drug" in prescriptions.columns:
+        for subject, group in prescriptions.groupby("subject_id"):
+            structured_drugs[int(subject)] = {
+                _normalize(name) for name in group["drug"].dropna().astype(str)
+            }
+
+    structured_diagnoses: dict[int, set[str]] = {}
+    diagnoses = tables.get("diagnoses_icd")
+    dictionary = tables.get("d_icd_diagnoses")
+    if diagnoses is not None and dictionary is not None:
+        merged = diagnoses.merge(
+            dictionary, on=["icd_code", "icd_version"], how="left", suffixes=("", "_dict")
+        )
+        for subject, group in merged.groupby("subject_id"):
+            tokens: set[str] = set()
+            for title in group["long_title"].dropna().astype(str):
+                tokens |= _tokens(title)
+            structured_diagnoses[int(subject)] = tokens
+
+    for record in records:
+        subject = record["subject_id"]
+        record_id = f"discharge:{record['note_id']}"
+
+        known_drugs = structured_drugs.get(subject, set())
+        if known_drugs:
+            for name in record["medications"]:
+                normalized = _normalize(name)
+                if not normalized:
+                    continue
+                if not any(normalized in known or known in normalized for known in known_drugs):
+                    ctx.add_issue(
+                        "TEXT_DRUG_MISMATCH", "warning", "discharge",
+                        f"出院用药未见于结构化处方: {name}",
+                        subject=subject, record=record_id,
+                    )
+
+        note_tokens: set[str] = set()
+        for line in record["diagnoses"]:
+            note_tokens |= _tokens(line)
+        coded_tokens = structured_diagnoses.get(subject, set())
+        if note_tokens and coded_tokens and not (note_tokens & coded_tokens):
+            ctx.add_issue(
+                "TEXT_CODE_MISMATCH", "warning", "discharge",
+                "出院诊断文本与结构化 ICD 描述无词重合",
+                subject=subject, record=record_id,
+            )
