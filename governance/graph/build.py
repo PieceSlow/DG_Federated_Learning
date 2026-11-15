@@ -191,6 +191,14 @@ def build_concept_layer(graph: GraphData, concept_map: pd.DataFrame | None) -> G
         graph.edges[relation] = pd.DataFrame(rows, columns=EDGE_COLUMNS)
         graph.manifest["relations"][relation] = int(len(rows))
     graph.manifest["objects"]["Concept"] = int(len(concept_meta))
+    specs = graph.manifest.setdefault("specs", {})
+    specs["Concept"] = {
+        "keys": ["cui"],
+        "attributes": ["name", "sty"],
+        "source_table": "concept_map",
+        "sensitivity": "L1",
+        "concept": "UMLS 概念（跨中心语义对齐锚点）",
+    }
     graph.manifest["note"] = graph.manifest.get("note", "") + " Concept 为 UMLS 派生对象。"
     return graph
 
@@ -243,6 +251,27 @@ def build_graph(
         "objects": object_counts,
         "relations": relation_counts,
         "sources": sorted({spec.source_table for spec in model.objects.values()}),
+        "specs": {
+            name: {
+                "keys": list(spec.keys),
+                "attributes": list(spec.attributes),
+                "source_table": spec.source_table,
+                "sensitivity": spec.sensitivity,
+                "concept": spec.concept,
+            }
+            for name, spec in model.objects.items()
+        },
+        "relation_specs": [
+            {
+                "name": relation.name,
+                "from": relation.from_object,
+                "to": relation.to_object,
+                "on": relation.on,
+                "cardinality": relation.cardinality,
+            }
+            for relation in model.relations
+        ],
+        "model_version": model.version,
         "note": "节点/边实例仅本地保存；manifest 只含计数，不含患者行。",
     }
     return GraphData(nodes=nodes, edges=edges, manifest=manifest)

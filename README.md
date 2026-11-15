@@ -25,7 +25,7 @@
 | 05 | 多源汇聚 | 统一事件表 + 患者 360 宽表 | `dataset/*.parquet` |
 | 06 | 字段对齐 | 字段级映射（33 条）+ 记录级血缘 | `mapping/*` |
 | 07 | 概念归一 | UMLS 编码/药名/检验名 → 概念（CUI）与语义类型 | `concept_map.parquet`、`concept_coverage.json` |
-| 08 | 对象化 | 7 类 MIMIC 对象 + Concept；6 条结构化关系 + 3 类概念边；图谱自检 | `graph/nodes.parquet`、`graph/edges/*`、`object_graph.json` |
+| 08 | 对象化 | 智能体提案对象/关系 → 本地实例化（可回退确定性模型）+ 图谱自检 | `graph/nodes.parquet`、`graph/edges/*`、`object_graph.json` |
 | 09 | 标签化 | 对象/术语/章节/敏感级别/划分 5 个维度 | `labels.json` |
 | 10 | 分类分级 | 7 条分级规则 + 落地结果 | `classification/*.csv` |
 | 11 | 编目 | 资源/资产/服务/共享/开放五级目录 | `data_catalog.json/.md` |
@@ -128,6 +128,10 @@ Windows 一键脚本：`powershell -ExecutionPolicy Bypass -File scripts\run_all
 | `--cohort-size` | 100 | 队列患者数（`icustays` 中 `subject_id` 最小的 N 名） |
 | `--max-notes-per-subject` | 3 | 每名患者最多使用几份出院小结 |
 | `--stages` | 全部 | 只运行指定阶段，逗号分隔 |
+| `--llm` | `off` | 智能体推理内核：`off` 确定性建图 / `mock` 演示 / `api` 真实调用 |
+| `--llm-model` | `deepseek-flash` | API 模式使用的模型 |
+| `--llm-budget-usd` | 1.0 | API 费用上限（护栏） |
+| `--llm-max-calls` | 200 | API 调用次数上限 |
 | `--list-stages` | — | 打印阶段与依赖后退出 |
 
 ## 五、产物布局
@@ -192,7 +196,7 @@ python -m unittest tests.test_integration_synthetic -v   # 端到端
 - 单元测试覆盖：配置与路径、ICD 章节与敏感级别、MEDS schema、质量规则、文本抽取、阶段编排；
 - 集成测试用合成数据跑完 11 个阶段，并断言产物齐全、schema 通过、三类质量问题被触发。
 
-## 九、Agent 基座（M1，默认关闭）
+## 九、Agent 层（M1 + M2.6a，默认关闭）
 
 智能体层与现有流水线**解耦**：`python run.py` 的行为、阶段数、产物路径完全不变；
 Agent 只有显式调用时才工作。
@@ -202,6 +206,11 @@ python -m governance.agents.demo              # mock 演示：零网络、零成
 python -m governance.agents.demo --llm off    # 演示关闭时明确报错、优雅降级
 python -m governance.agents.demo --mimic-root "E:\mimic-iv数据\mimic-iv-3.1"  # 用真实表结构
 ```
+
+**M2.6a 智能体建图**：`ObjectFinderAgent`（提对象）→ 校验器（表/主键必须真实）→
+`RelationExtractorAgent`（提关系）→ 本地 `build_graph` 执行 → `GraphCriticAgent`（审缺陷）→
+必要时回退关系抽取重试。`--llm off` 时回退到 `objects.yaml` 的确定性模型，结果可复现；
+所有调用写 `output/audit/agent_trace.jsonl`。
 
 M1 包含：
 

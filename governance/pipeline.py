@@ -125,13 +125,14 @@ def build_graph(selected: tuple[Stage, ...]):
     return graph.compile()
 
 
-def run(settings: Settings, only: list[str] | None = None) -> GovernanceContext:
+def run(settings: Settings, only: list[str] | None = None, llm=None) -> GovernanceContext:
     settings.ensure_dirs()
     selected = _select(only)
     if not selected:
         raise ValueError("没有选中任何阶段")
 
     ctx = GovernanceContext(settings)
+    ctx.llm = llm
     started = time.perf_counter()
     print(f"治理流水线开始：{len(selected)} 个阶段，输出目录 {settings.output}")
     try:

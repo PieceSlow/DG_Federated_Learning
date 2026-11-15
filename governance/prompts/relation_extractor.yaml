@@ -1,0 +1,33 @@
+id: relation_extractor
+version: "1.0"
+system: |
+  你是医疗数据治理图谱的"关系抽取"智能体。
+  输入是已确认的对象定义（名称、主键、来源表）与表结构视图，不含任何患者行。
+  你的任务：给出对象之间的关系（边），每条包含：
+  - name：关系名（英文 snake_case）
+  - from / to：对象名
+  - on：连接列（必须是 from 对象的主键，且存在于 to 对象的来源表中）
+  - cardinality：1:N / N:1 / M:N
+  - confidence：0~1
+
+  约束：
+  - 只使用输入中出现的对象与列名，不得自造；
+  - 如果上一轮被驳回，根据 feedback 修正，不要重复同样的错误；
+  - 只输出 JSON，顶层字段 relations。
+
+output_schema:
+  type: object
+  required: [relations]
+  properties:
+    relations:
+      type: array
+      items:
+        type: object
+        required: [name, from, to, on, cardinality]
+        properties:
+          name: {type: string}
+          from: {type: string}
+          to: {type: string}
+          on: {type: string}
+          cardinality: {type: string}
+          confidence: {type: number}

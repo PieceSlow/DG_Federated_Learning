@@ -15,6 +15,7 @@ from typing import Any
 import pandas as pd
 
 from governance.config import Settings
+from governance.llm import LLMService
 
 #: 同一规则最多保留多少条明细（计数不截断），避免问题文件无限膨胀
 ISSUE_CAP_PER_RULE = 200
@@ -48,6 +49,7 @@ class GovernanceContext:
     audit: list[dict[str, Any]] = field(default_factory=list)
     stats: dict[str, Any] = field(default_factory=dict)
     stage_timings: list[tuple[str, float]] = field(default_factory=list)
+    llm: LLMService | None = None
 
     def log(self, stage: str, message: str) -> None:
         self.audit.append(

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
 from governance import pipeline
+from governance.llm import Budget, LLMConfig, LLMUnavailable, build_service
 from governance.config import (
     Settings,
     default_mimic_root,
@@ -33,6 +35,14 @@ def build_parser() -> argparse.ArgumentParser:
                         help="每名患者最多使用几份出院小结")
     parser.add_argument("--stages", default=None,
                         help="只运行指定阶段（逗号分隔，如 assemble,align）；默认全流程")
+    parser.add_argument("--llm", choices=["off", "mock", "api"],
+                        default=os.environ.get("LLM_PROVIDER", "off"),
+                        help="智能体推理内核：off（默认，确定性建图）/ mock / api")
+    parser.add_argument("--llm-model", default=os.environ.get("LLM_MODEL", "deepseek-flash"))
+    parser.add_argument("--llm-budget-usd", type=float,
+                        default=float(os.environ.get("LLM_BUDGET_USD", "1.0")))
+    parser.add_argument("--llm-max-calls", type=int,
+                        default=int(os.environ.get("LLM_MAX_CALLS", "200")))
     parser.add_argument("--list-stages", action="store_true", help="列出阶段及其依赖后退出")
     return parser
 
@@ -62,8 +72,25 @@ def main(argv: list[str] | None = None) -> int:
         cohort_size=args.cohort_size,
         max_notes_per_subject=args.max_notes_per_subject,
     )
+    llm = None
+    if args.llm != "off":
+        try:
+            config = LLMConfig(
+                provider=args.llm,
+                model=args.llm_model,
+                api_key=os.environ.get("DEEPSEEK_API_KEY"),
+            )
+            llm = build_service(
+                config,
+                settings.output,
+                budget=Budget(max_calls=args.llm_max_calls, max_usd=args.llm_budget_usd),
+            )
+        except LLMUnavailable as exc:
+            print(f"无法启用智能体：{exc}", file=sys.stderr)
+            return 2
+
     try:
-        pipeline.run(settings, only=stages)
+        pipeline.run(settings, only=stages, llm=llm)
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         print(f"治理失败：{exc}", file=sys.stderr)
         return 1

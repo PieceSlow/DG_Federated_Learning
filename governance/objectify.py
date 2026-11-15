@@ -22,6 +22,7 @@ import json
 import pandas as pd
 
 from governance.context import GovernanceContext
+from governance.graph.agentic import build_with_agents
 from governance.graph.build import build_concept_layer, build_graph
 from governance.graph.store import GraphStore
 from governance.graph.verify import verify as verify_graph
@@ -34,104 +35,56 @@ CONCEPT_RELATIONS_SPEC = [
 ]
 
 
-RELATIONS = [
-    {"from": "Patient", "to": "Encounter", "on": "subject_id", "cardinality": "1:N"},
-    {"from": "Encounter", "to": "ICUStay", "on": "hadm_id", "cardinality": "1:N"},
-    {"from": "Encounter", "to": "ClinicalNote", "on": "hadm_id", "cardinality": "1:N"},
-    {"from": "Encounter", "to": "Diagnosis", "on": "hadm_id", "cardinality": "1:N"},
-    {"from": "Encounter", "to": "Prescription", "on": "hadm_id", "cardinality": "1:N"},
-    {"from": "Encounter", "to": "Procedure", "on": "hadm_id", "cardinality": "1:N"},
-]
+def _objects_from_graph(graph_data) -> list[dict]:
+    """对象清单直接来自图谱 manifest（智能体提案或默认模型），保证口径一致。"""
+    specs = graph_data.manifest.get("specs", {})
+    counts = graph_data.manifest.get("objects", {})
+    items: list[dict] = []
+    for name, rows in counts.items():
+        spec = specs.get(name, {})
+        items.append(
+            {
+                "object": name,
+                "source_table": spec.get("source_table", ""),
+                "grain": "1 行/对象",
+                "keys": spec.get("keys", []),
+                "attributes": spec.get("attributes", []),
+                "rows": int(rows),
+                "sensitivity": spec.get("sensitivity", "L2"),
+            }
+        )
+    return items
 
 
-def _objects(ctx: GovernanceContext) -> list[dict]:
-    tables = ctx.tables
+def _relations_from_graph(graph_data) -> list[dict]:
     return [
         {
-            "object": "Patient",
-            "source_table": "patients",
-            "grain": "1 行/患者",
-            "keys": ["subject_id"],
-            "attributes": ["gender", "anchor_age", "anchor_year"],
-            "rows": int(len(tables["patients"])),
-            "sensitivity": "L3",
-        },
-        {
-            "object": "Encounter",
-            "source_table": "admissions",
-            "grain": "1 行/住院",
-            "keys": ["hadm_id"],
-            "attributes": ["admittime", "dischtime", "admission_type", "hospital_expire_flag"],
-            "rows": int(len(tables["admissions"])),
-            "sensitivity": "L3",
-        },
-        {
-            "object": "ICUStay",
-            "source_table": "icustays",
-            "grain": "1 行/ICU 停留",
-            "keys": ["stay_id"],
-            "attributes": ["intime", "outtime", "first_careunit", "last_careunit"],
-            "rows": int(len(tables["icustays"])),
-            "sensitivity": "L3",
-        },
-        {
-            "object": "ClinicalNote",
-            "source_table": "discharge",
-            "grain": "1 行/出院小结",
-            "keys": ["note_id"],
-            "attributes": ["charttime", "text"],
-            "rows": int(ctx.stats.get("notes_used", 0)),
-            "sensitivity": "L3",
-        },
-        {
-            "object": "Diagnosis",
-            "source_table": "diagnoses_icd",
-            "grain": "1 行/诊断编码",
-            "keys": ["subject_id", "hadm_id", "seq_num"],
-            "attributes": ["icd_code", "icd_version"],
-            "rows": int(len(tables["diagnoses_icd"])),
-            "sensitivity": "L2",
-        },
-        {
-            "object": "Prescription",
-            "source_table": "prescriptions",
-            "grain": "1 行/处方",
-            "keys": ["subject_id", "hadm_id", "pharmacy_id"],
-            "attributes": ["starttime", "drug", "formulary_drug_cd", "dose_val_rx"],
-            "rows": int(len(tables["prescriptions"])),
-            "sensitivity": "L2",
-        },
-        {
-            "object": "Procedure",
-            "source_table": "procedures_icd",
-            "grain": "1 行/操作编码",
-            "keys": ["subject_id", "hadm_id", "seq_num"],
-            "attributes": ["chartdate", "icd_code", "icd_version"],
-            "rows": int(len(tables["procedures_icd"])),
-            "sensitivity": "L2",
-        },
+            "from": item["from"],
+            "to": item["to"],
+            "on": item["on"],
+            "cardinality": item.get("cardinality", "1:N"),
+        }
+        for item in graph_data.manifest.get("relation_specs", [])
     ]
 
 
 def run(ctx: GovernanceContext) -> None:
-    graph_data = build_graph(ctx.tables, notes=_note_frame(ctx))
+    notes = _note_frame(ctx)
+    graph_data = None
+    if ctx.llm is not None and ctx.llm.config.provider != "off":
+        graph_data, errors = build_with_agents(ctx, notes)
+        if graph_data is None:
+            ctx.log(
+                "智能体建图",
+                "回退到确定性对象模型：" + "；".join(errors[:3]),
+            )
+    if graph_data is None:
+        graph_data = build_graph(ctx.tables, notes=notes)
     graph_data = build_concept_layer(graph_data, ctx.concept_map)
 
-    objects = _objects(ctx)
-    relations = list(RELATIONS)
-    concept_count = int(graph_data.manifest["objects"].get("Concept", 0))
-    if concept_count:
-        objects.append(
-            {
-                "object": "Concept",
-                "source_table": "concept_map",
-                "grain": "1 行/概念",
-                "keys": ["cui"],
-                "attributes": ["name", "sty"],
-                "rows": concept_count,
-                "sensitivity": "L1",
-            }
-        )
+    objects = _objects_from_graph(graph_data)
+    relations = _relations_from_graph(graph_data)
+    if int(graph_data.manifest["objects"].get("Concept", 0)):
         relations.extend(CONCEPT_RELATIONS_SPEC)
 
     graph = {
