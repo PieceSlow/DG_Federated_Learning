@@ -22,11 +22,18 @@ import json
 import pandas as pd
 
 from governance.context import GovernanceContext
-from governance.graph.build import build_graph
+from governance.graph.build import build_concept_layer, build_graph
 from governance.graph.store import GraphStore
 from governance.graph.verify import verify as verify_graph
 
 #: 对象关系（一对多），与上图一致
+CONCEPT_RELATIONS_SPEC = [
+    {"from": "Diagnosis", "to": "Concept", "on": "cui", "cardinality": "1:N"},
+    {"from": "Prescription", "to": "Concept", "on": "cui", "cardinality": "1:N"},
+    {"from": "Procedure", "to": "Concept", "on": "cui", "cardinality": "1:N"},
+]
+
+
 RELATIONS = [
     {"from": "Patient", "to": "Encounter", "on": "subject_id", "cardinality": "1:N"},
     {"from": "Encounter", "to": "ICUStay", "on": "hadm_id", "cardinality": "1:N"},
@@ -107,7 +114,26 @@ def _objects(ctx: GovernanceContext) -> list[dict]:
 
 
 def run(ctx: GovernanceContext) -> None:
+    graph_data = build_graph(ctx.tables, notes=_note_frame(ctx))
+    graph_data = build_concept_layer(graph_data, ctx.concept_map)
+
     objects = _objects(ctx)
+    relations = list(RELATIONS)
+    concept_count = int(graph_data.manifest["objects"].get("Concept", 0))
+    if concept_count:
+        objects.append(
+            {
+                "object": "Concept",
+                "source_table": "concept_map",
+                "grain": "1 行/概念",
+                "keys": ["cui"],
+                "attributes": ["name", "sty"],
+                "rows": concept_count,
+                "sensitivity": "L1",
+            }
+        )
+        relations.extend(CONCEPT_RELATIONS_SPEC)
+
     graph = {
         "objects": {
             item["object"]: {
@@ -120,7 +146,7 @@ def run(ctx: GovernanceContext) -> None:
             }
             for item in objects
         },
-        "relations": RELATIONS,
+        "relations": relations,
     }
     ctx.object_graph = graph
 
@@ -132,7 +158,6 @@ def run(ctx: GovernanceContext) -> None:
     pd.DataFrame(objects).to_csv(
         metadata / "object_inventory.csv", index=False, encoding="utf-8-sig"
     )
-    graph_data = build_graph(ctx.tables, notes=_note_frame(ctx))
     GraphStore(ctx.settings.governance / "graph").write(graph_data)
 
     graph_issues = verify_graph(graph_data)
@@ -162,7 +187,7 @@ def run(ctx: GovernanceContext) -> None:
     )
     ctx.log(
         "对象化",
-        f"定义 {len(objects)} 类对象、{len(RELATIONS)} 条关系；"
+        f"定义 {len(objects)} 类对象、{len(relations)} 条关系；"
         f"实例化 {int(len(graph_data.nodes))} 个节点、"
         f"{sum(len(frame) for frame in graph_data.edges.values())} 条边；"
         f"图谱校验发现 {len(graph_issues)} 项问题。",

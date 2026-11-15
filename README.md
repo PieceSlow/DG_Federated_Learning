@@ -25,7 +25,7 @@
 | 05 | 多源汇聚 | 统一事件表 + 患者 360 宽表 | `dataset/*.parquet` |
 | 06 | 字段对齐 | 字段级映射（33 条）+ 记录级血缘 | `mapping/*` |
 | 07 | 概念归一 | UMLS 编码/药名/检验名 → 概念（CUI）与语义类型 | `concept_map.parquet`、`concept_coverage.json` |
-| 08 | 对象化 | 7 类对象、6 条关系、节点/边实例、图谱自检 | `graph/nodes.parquet`、`graph/edges/*`、`object_graph.json` |
+| 08 | 对象化 | 7 类 MIMIC 对象 + Concept；6 条结构化关系 + 3 类概念边；图谱自检 | `graph/nodes.parquet`、`graph/edges/*`、`object_graph.json` |
 | 09 | 标签化 | 对象/术语/章节/敏感级别/划分 5 个维度 | `labels.json` |
 | 10 | 分类分级 | 7 条分级规则 + 落地结果 | `classification/*.csv` |
 | 11 | 编目 | 资源/资产/服务/共享/开放五级目录 | `data_catalog.json/.md` |

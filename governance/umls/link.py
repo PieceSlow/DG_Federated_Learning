@@ -58,7 +58,7 @@ class ConceptLinker:
         self._lexicon: dict[str, dict[str, tuple[str, str]]] = {}
         self._lexicon_keys: dict[str, list[str]] = {}
         for sab in ("RXNORM", "LNC"):
-            subset = self.terms[self.terms["sab"] == sab].drop_duplicates("cui")
+            subset = self.terms[self.terms["sab"] == sab]  # 保留同义术语，不只取每个 CUI 的首选词
             mapping: dict[str, tuple[str, str]] = {}
             for cui, term in zip(subset["cui"], subset["str"]):
                 key = normalize(term)

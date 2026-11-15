@@ -23,7 +23,7 @@ import pandas as pd
 from governance.graph.build import GraphData
 
 PRIMARY_TYPES = {"Patient", "Encounter", "ICUStay"}
-EVENT_TYPES = {"Diagnosis", "Prescription", "Procedure", "ClinicalNote"}
+EVENT_TYPES = {"Diagnosis", "Prescription", "Procedure", "ClinicalNote", "Concept"}
 TOLERANCE = pd.Timedelta(days=1)
 
 

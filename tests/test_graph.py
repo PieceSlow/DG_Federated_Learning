@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from governance.graph.build import build_graph, make_object_id
+from governance.graph.build import build_concept_layer, build_graph, make_object_id
 from governance.graph.model import load_model
 from governance.graph.store import GraphStore
 from governance.graph.verify import verify
@@ -170,6 +170,40 @@ class VerifyTest(unittest.TestCase):
         issues = verify(build_graph(tables, _notes()))
         details = [issue for issue in issues if issue["rule"] == "GRAPH_TEMPORAL_CONFLICT"]
         self.assertTrue(any("ICU" in issue["detail"] for issue in details))
+
+
+def _concept_map() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            ["ICD10", "I10", "", "C001", "Essential hypertension", "Disease or Syndrome", 1.0, "icd_exact"],
+            ["RXNORM", "Aspirin", "Aspirin", "C003", "Aspirin", "Pharmacologic Substance", 1.0, "term_exact"],
+            ["ICD10PCS", "0BH17EZ", "", "C005", "Insertion of endotracheal airway",
+             "Therapeutic or Preventive Procedure", 1.0, "procedure_exact"],
+        ],
+        columns=["source_system", "source_code", "source_label", "cui",
+                 "concept_name", "sty", "confidence", "method"],
+    )
+
+
+class ConceptLayerTest(unittest.TestCase):
+    def test_adds_concept_nodes_and_edges(self) -> None:
+        graph = build_concept_layer(build_graph(_tables(), _notes()), _concept_map())
+        concepts = graph.nodes[graph.nodes.object_type == "Concept"]
+        self.assertEqual(len(concepts), 3)
+        self.assertEqual(graph.manifest["relations"]["diagnosis_concept"], 1)
+        self.assertEqual(graph.manifest["relations"]["prescription_concept"], 1)
+        self.assertEqual(graph.manifest["relations"]["procedure_concept"], 1)
+        self.assertEqual(graph.manifest["objects"]["Concept"], 3)
+        self.assertEqual(verify(graph), [])
+
+    def test_empty_or_missing_concept_map_is_noop(self) -> None:
+        base = build_graph(_tables(), _notes())
+        self.assertIs(build_concept_layer(base, None), base)
+        self.assertIs(build_concept_layer(base, pd.DataFrame()), base)
+
+    def test_unmapped_codes_are_ignored(self) -> None:
+        graph = build_concept_layer(build_graph(_tables(), _notes()), _concept_map().iloc[0:0])
+        self.assertEqual(len(graph.nodes[graph.nodes.object_type == "Concept"]), 0)
 
 
 if __name__ == "__main__":

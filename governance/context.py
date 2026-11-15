@@ -34,6 +34,7 @@ class GovernanceContext:
     events: list[dict[str, Any]] = field(default_factory=list)
     clinical_events: pd.DataFrame | None = None
     patient_360: pd.DataFrame | None = None
+    concept_map: pd.DataFrame | None = None
     record_map: pd.DataFrame | None = None
     field_map: pd.DataFrame | None = None
     object_graph: dict[str, Any] | None = None

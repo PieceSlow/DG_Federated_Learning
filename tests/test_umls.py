@@ -9,12 +9,14 @@ from pathlib import Path
 
 import pandas as pd
 
+from governance import pipeline
 from governance.concept import run as concept_run
 from governance.config import Settings
 from governance.context import GovernanceContext
 from governance.umls.config import cache_root
 from governance.umls.link import ConceptLinker
 from governance.umls.preprocess import preprocess
+from tests.synthetic import write_synthetic_mimic
 
 CONSO_FIELDS = 18
 STY_FIELDS = 6
@@ -64,6 +66,7 @@ def write_fixture(root: Path) -> Path:
         _conso("C002", "ENG", "Y", "ICD10CM", "PT", "E119", "Type 2 diabetes mellitus"),
         _conso("C003", "ENG", "Y", "RXNORM", "IN", "1191", "Aspirin"),
         _conso("C004", "ENG", "Y", "LNC", "LN", "2160-0", "Creatinine [Mass/volume] in Serum or Plasma"),
+        _conso("C004", "ENG", "N", "LNC", "SY", "2160-0", "Creatinine"),
         _conso("C005", "ENG", "Y", "ICD10PCS", "PT", "0BH17EZ", "Insertion of endotracheal airway"),
         _conso("C006", "ENG", "Y", "ICD9CM", "PT", "3893", "Venous catheterization"),
         # 以下应被过滤：非英文、被抑制、非目标词表
@@ -96,7 +99,7 @@ class PreprocessTest(unittest.TestCase):
             cache = Path(tmp) / "cache"
             manifest = preprocess(meta, cache)
             self.assertEqual(manifest["concepts"], 6)
-            self.assertEqual(manifest["terms"], 7)
+            self.assertEqual(manifest["terms"], 8)
             self.assertEqual(manifest["relations"], 2)
             for name in ("terms.parquet", "concepts.parquet", "sty.parquet", "rel.parquet"):
                 self.assertTrue((cache / name).exists(), name)
@@ -198,6 +201,32 @@ class ConceptStageTest(unittest.TestCase):
             ctx = self._context(Path(tmp), with_cache=False)
             concept_run(ctx)
             self.assertEqual(ctx.stats["concept_mapping"]["status"], "skipped")
+
+
+class PipelineConceptTest(unittest.TestCase):
+    def test_pipeline_with_umls_cache_builds_concept_layer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            mimic = write_synthetic_mimic(root)
+            settings = Settings(mimic_root=mimic, note_root=root, output=root / "out", cohort_size=3)
+            meta = write_fixture(root)
+            preprocess(meta, cache_root(settings.output))
+
+            ctx = pipeline.run(settings)
+            self.assertEqual(ctx.stats["concept_mapping"]["overall"]["mapped"], 7)
+
+            manifest = json.loads(
+                (settings.governance / "graph" / "graph_manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["objects"]["Concept"], 5)
+            self.assertEqual(manifest["relations"]["diagnosis_concept"], 3)
+            self.assertEqual(manifest["relations"]["prescription_concept"], 1)
+            self.assertEqual(manifest["relations"]["procedure_concept"], 2)
+
+            labels = json.loads(
+                (settings.governance / "metadata" / "labels.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(labels["dimensions"]["semantic_type"]["values"])
 
 
 if __name__ == "__main__":

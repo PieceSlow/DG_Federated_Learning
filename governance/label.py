@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -115,6 +116,24 @@ def sensitivity_for(event_type: str) -> str:
     return SENSITIVITY.get(event_type, "L2")
 
 
+def _semantic_type_counts(concept_map: pd.DataFrame | None) -> dict[str, int]:
+    """按 CUI 统计 UMLS 语义类型（概念数，不是患者数）。"""
+    if concept_map is None or concept_map.empty or "sty" not in concept_map.columns:
+        return {}
+    counts: Counter[str] = Counter()
+    seen: set[str] = set()
+    for cui, sty in zip(concept_map["cui"], concept_map["sty"]):
+        cui = str(cui)
+        if cui in seen:
+            continue
+        seen.add(cui)
+        for part in str(sty).split("|"):
+            part = part.strip()
+            if part:
+                counts[part] += 1
+    return dict(counts.most_common(15))
+
+
 def _value_counts(series: pd.Series, top: int | None = None) -> dict[str, int]:
     counts = series.fillna("(空)").value_counts()
     if top:
@@ -157,6 +176,12 @@ def run(ctx: GovernanceContext) -> None:
                 "description": TAG_DIMENSIONS["split"],
                 "level": "划分",
                 "values": _value_counts(events["split"]),
+            },
+            "semantic_type": {
+                "description": "UMLS 语义类型（概念层，按 CUI 统计）",
+                "level": "概念语义",
+                "values": _semantic_type_counts(ctx.concept_map),
+                "note": "UMLS 未启用时为空；计数单位是概念，不是患者",
             },
         },
         "note": "标签描述数据语义与敏感级别，不包含任何患者直接标识。",

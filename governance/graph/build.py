@@ -20,6 +20,13 @@ import pandas as pd
 from governance.graph.model import ObjectModel, ObjectSpec, RelationSpec, load_model
 
 NODE_COLUMNS = ["object_type", "object_id", "attributes", "source_table"]
+
+#: UMLS 概念层：把事件对象挂到概念（派生对象，不来自 MIMIC 表）
+CONCEPT_RELATIONS = {
+    "Diagnosis": "diagnosis_concept",
+    "Prescription": "prescription_concept",
+    "Procedure": "procedure_concept",
+}
 EDGE_COLUMNS = ["src_type", "src_id", "dst_type", "dst_id", "relation", "evidence", "confidence"]
 
 
@@ -100,6 +107,92 @@ def _edge_frame(
             }
         )
     return pd.DataFrame(records, columns=EDGE_COLUMNS)
+
+
+def _concept_key(object_type: str, attributes: dict[str, Any]) -> tuple[str, str] | None:
+    if object_type == "Diagnosis":
+        version = attributes.get("icd_version")
+        code = attributes.get("icd_code")
+        return (f"ICD{int(float(version))}", str(code)) if version and code else None
+    if object_type == "Procedure":
+        version = attributes.get("icd_version")
+        code = attributes.get("icd_code")
+        if not version or not code:
+            return None
+        system = "ICD10PCS" if int(float(version)) == 10 else "ICD9CM_PROC"
+        return system, str(code)
+    if object_type == "Prescription":
+        drug = attributes.get("drug")
+        return ("RXNORM", str(drug)) if drug else None
+    return None
+
+
+def build_concept_layer(graph: GraphData, concept_map: pd.DataFrame | None) -> GraphData:
+    """在已有图谱上追加 Concept 节点与三类概念边。
+
+    ``concept_map`` 来自概念归一阶段；为空时原样返回（不改变原有 7 类对象）。
+    """
+    if concept_map is None or concept_map.empty:
+        return graph
+    index: dict[tuple[str, str], tuple[str, str, str, float, str]] = {}
+    for row in concept_map.itertuples():
+        index[(str(row.source_system), str(row.source_code))] = (
+            str(row.cui), str(row.concept_name), str(row.sty),
+            float(row.confidence), str(row.method),
+        )
+
+    records: dict[str, list[dict[str, Any]]] = {name: [] for name in CONCEPT_RELATIONS.values()}
+    concept_meta: dict[str, tuple[str, str]] = {}
+    for node in graph.nodes.itertuples():
+        relation = CONCEPT_RELATIONS.get(node.object_type)
+        if relation is None:
+            continue
+        try:
+            attributes = json.loads(node.attributes or "{}")
+        except json.JSONDecodeError:
+            continue
+        key = _concept_key(node.object_type, attributes)
+        if key is None:
+            continue
+        hit = index.get(key)
+        if hit is None:
+            continue
+        cui, name, sty, confidence, method = hit
+        concept_meta[cui] = (name, sty)
+        records[relation].append(
+            {
+                "src_type": node.object_type,
+                "src_id": node.object_id,
+                "dst_type": "Concept",
+                "dst_id": f"Concept:{cui}",
+                "relation": relation,
+                "evidence": f"concept_map:{key[0]}:{key[1]}:{method}",
+                "confidence": confidence,
+            }
+        )
+
+    if not concept_meta:
+        return graph
+
+    concept_nodes = pd.DataFrame(
+        [
+            {
+                "object_type": "Concept",
+                "object_id": f"Concept:{cui}",
+                "attributes": json.dumps({"name": name, "sty": sty}, ensure_ascii=False),
+                "source_table": "concept_map",
+            }
+            for cui, (name, sty) in sorted(concept_meta.items())
+        ],
+        columns=NODE_COLUMNS,
+    )
+    graph.nodes = pd.concat([graph.nodes, concept_nodes], ignore_index=True)
+    for relation, rows in records.items():
+        graph.edges[relation] = pd.DataFrame(rows, columns=EDGE_COLUMNS)
+        graph.manifest["relations"][relation] = int(len(rows))
+    graph.manifest["objects"]["Concept"] = int(len(concept_meta))
+    graph.manifest["note"] = graph.manifest.get("note", "") + " Concept 为 UMLS 派生对象。"
+    return graph
 
 
 def build_graph(

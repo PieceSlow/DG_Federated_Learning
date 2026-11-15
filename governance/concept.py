@@ -47,6 +47,7 @@ def run(ctx: GovernanceContext) -> None:
             "需要时运行 python -m governance.umls.preprocess 后重跑。",
         )
         ctx.stats["concept_mapping"] = {"status": "skipped"}
+        ctx.concept_map = None
         return
 
     linker = ConceptLinker(cache)
@@ -118,6 +119,7 @@ def run(ctx: GovernanceContext) -> None:
     metadata = ctx.settings.governance / "metadata"
     metadata.mkdir(parents=True, exist_ok=True)
     concept_map.to_parquet(metadata / "concept_map.parquet", index=False)
+    ctx.concept_map = concept_map
 
     for system, bucket in coverage.items():
         bucket["coverage"] = (
