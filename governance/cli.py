@@ -43,6 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
                         default=float(os.environ.get("LLM_BUDGET_USD", "1.0")))
     parser.add_argument("--llm-max-calls", type=int,
                         default=int(os.environ.get("LLM_MAX_CALLS", "200")))
+    parser.add_argument("--graph-mode", choices=["full", "incremental"],
+                        default=os.environ.get("GRAPH_MODE", "full"),
+                        help="图谱写入模式：full 整图重建 / incremental 增量 upsert")
+    parser.add_argument("--graph-delete-missing", action="store_true",
+                        help="增量模式下删除本轮未见到的节点/边（默认保留）")
     parser.add_argument("--list-stages", action="store_true", help="列出阶段及其依赖后退出")
     return parser
 
@@ -71,6 +76,8 @@ def main(argv: list[str] | None = None) -> int:
         output=args.output,
         cohort_size=args.cohort_size,
         max_notes_per_subject=args.max_notes_per_subject,
+        graph_mode=args.graph_mode,
+        graph_delete_missing=args.graph_delete_missing,
     )
     llm = None
     if args.llm != "off":

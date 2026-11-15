@@ -111,7 +111,11 @@ def run(ctx: GovernanceContext) -> None:
     pd.DataFrame(objects).to_csv(
         metadata / "object_inventory.csv", index=False, encoding="utf-8-sig"
     )
-    GraphStore(ctx.settings.governance / "graph").write(graph_data)
+    GraphStore(ctx.settings.governance / "graph").write(
+        graph_data,
+        mode=ctx.settings.graph_mode,
+        delete_missing=ctx.settings.graph_delete_missing,
+    )
 
     graph_issues = verify_graph(graph_data)
     for issue in graph_issues:

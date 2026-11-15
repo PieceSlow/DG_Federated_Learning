@@ -64,6 +64,8 @@ class Settings:
     output: Path
     cohort_size: int = 100
     max_notes_per_subject: int = 3
+    graph_mode: str = "full"
+    graph_delete_missing: bool = False
 
     @property
     def eventstore(self) -> Path:

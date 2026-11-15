@@ -67,6 +67,51 @@ def _tables() -> dict[str, pd.DataFrame]:
     }
 
 
+def _tables_two() -> dict[str, pd.DataFrame]:
+    tables = _tables()
+    tables["patients"] = pd.concat(
+        [tables["patients"], pd.DataFrame(
+            {"subject_id": [2], "gender": ["M"], "anchor_age": [70], "anchor_year": [2150]}
+        )], ignore_index=True)
+    tables["admissions"] = pd.concat(
+        [tables["admissions"], pd.DataFrame({
+            "subject_id": [2], "hadm_id": [12],
+            "admittime": ["2100-02-01 08:00:00"], "dischtime": ["2100-02-03 08:00:00"],
+            "admission_type": ["URGENT"], "hospital_expire_flag": [0],
+        })], ignore_index=True)
+    tables["icustays"] = pd.concat(
+        [tables["icustays"], pd.DataFrame({
+            "subject_id": [2], "hadm_id": [12], "stay_id": [22],
+            "first_careunit": ["SICU"], "last_careunit": ["SICU"],
+            "intime": ["2100-02-01 09:00:00"], "outtime": ["2100-02-02 09:00:00"],
+        })], ignore_index=True)
+    tables["diagnoses_icd"] = pd.concat(
+        [tables["diagnoses_icd"], pd.DataFrame({
+            "subject_id": [2], "hadm_id": [12], "seq_num": [1],
+            "icd_code": ["E119"], "icd_version": [10],
+        })], ignore_index=True)
+    tables["procedures_icd"] = pd.concat(
+        [tables["procedures_icd"], pd.DataFrame({
+            "subject_id": [2], "hadm_id": [12], "seq_num": [1],
+            "icd_code": ["3893"], "icd_version": [9], "chartdate": ["2100-02-02"],
+        })], ignore_index=True)
+    tables["prescriptions"] = pd.concat(
+        [tables["prescriptions"], pd.DataFrame({
+            "subject_id": [2], "hadm_id": [12], "pharmacy_id": [502],
+            "starttime": ["2100-02-02 10:00:00"], "drug": ["Metoprolol"],
+            "formulary_drug_cd": ["METOPROLOL"], "dose_val_rx": ["25"],
+        })], ignore_index=True)
+    return tables
+
+
+def _notes_two() -> pd.DataFrame:
+    return pd.concat(
+        [_notes(), pd.DataFrame({
+            "note_id": ["902"], "subject_id": [2], "hadm_id": [12],
+            "charttime": ["2100-02-03 10:00:00"], "note_type": ["DS"],
+        })], ignore_index=True)
+
+
 def _notes(hadm_id: int | None = 11) -> pd.DataFrame:
     return pd.DataFrame(
         {
@@ -140,6 +185,61 @@ class StoreTest(unittest.TestCase):
             store.write(build_graph(tables, _notes()))
             self.assertFalse((store.edges_dir / "obsolete.parquet").exists())
             self.assertEqual(len(store.read_edges("has_procedure")), 0)
+
+
+class IncrementalStoreTest(unittest.TestCase):
+    def _store(self, tmp: str) -> GraphStore:
+        return GraphStore(Path(tmp))
+
+    def test_full_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = self._store(tmp)
+            graph = build_graph(_tables(), _notes())
+            store.write(graph)
+            first = store.read_nodes()
+            store.write(graph)
+            second = store.read_nodes()
+            pd.testing.assert_frame_equal(first, second)
+            history = store.read_history()
+            self.assertEqual(len(history), 2)
+            self.assertEqual(history[0]["mode"], "full")
+
+    def test_incremental_upsert_keeps_old_and_reports_delta(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = self._store(tmp)
+            store.write(build_graph(_tables(), _notes()))
+            store.write(build_graph(_tables_two(), _notes_two()), mode="incremental")
+
+            nodes = store.read_nodes()
+            self.assertEqual(len(nodes), 14)
+            self.assertIn("Patient:1", set(nodes["object_id"]))
+            self.assertIn("Patient:2", set(nodes["object_id"]))
+            manifest = store.read_manifest()
+            self.assertEqual(manifest["mode"], "incremental")
+            self.assertEqual(manifest["delta"]["nodes"]["added"], 7)
+            self.assertEqual(manifest["delta"]["nodes"]["unchanged"], 7)
+            self.assertEqual(manifest["delta"]["edges"]["added"], 6)
+            self.assertEqual(len(store.read_history()), 2)
+
+    def test_incremental_delete_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            store = self._store(tmp)
+            store.write(build_graph(_tables_two(), _notes_two()))
+            store.write(
+                build_graph(_tables(), _notes()),
+                mode="incremental",
+                delete_missing=True,
+            )
+            nodes = store.read_nodes()
+            self.assertEqual(len(nodes), 7)
+            self.assertNotIn("Patient:2", set(nodes["object_id"]))
+            manifest = store.read_manifest()
+            self.assertGreater(manifest["delta"]["nodes"]["removed"], 0)
+
+    def test_unknown_mode_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError):
+                self._store(tmp).write(build_graph(_tables(), _notes()), mode="append")
 
 
 class VerifyTest(unittest.TestCase):

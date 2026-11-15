@@ -132,6 +132,8 @@ Windows 一键脚本：`powershell -ExecutionPolicy Bypass -File scripts\run_all
 | `--llm-model` | `deepseek-flash` | API 模式使用的模型 |
 | `--llm-budget-usd` | 1.0 | API 费用上限（护栏） |
 | `--llm-max-calls` | 200 | API 调用次数上限 |
+| `--graph-mode` | `full` | 图谱写入模式：`full` 整图重建 / `incremental` 增量 upsert |
+| `--graph-delete-missing` | false | 增量模式下删除本轮未见到的节点/边 |
 | `--list-stages` | — | 打印阶段与依赖后退出 |
 
 ## 五、产物布局
@@ -144,7 +146,7 @@ output/
 ├── governance/                       # 治理资产
 │   ├── dataset/{clinical_events.parquet, patient_360.parquet}
 │   ├── mapping/{field_level.csv, record_level.parquet}
-│   ├── graph/{nodes.parquet, edges/*.parquet, graph_manifest.json}
+│   ├── graph/{nodes.parquet, edges/*.parquet, graph_manifest.json, graph_history.jsonl}
 │   ├── metadata/{data_source_inventory.csv, object_graph.json,
 │   │             object_inventory.csv, labels.json}
 │   ├── quality/{issues.csv, event_stream.json, governed_dataset.json}
@@ -211,6 +213,9 @@ python -m governance.agents.demo --mimic-root "E:\mimic-iv数据\mimic-iv-3.1"  
 `RelationExtractorAgent`（提关系）→ 本地 `build_graph` 执行 → `GraphCriticAgent`（审缺陷）→
 必要时回退关系抽取重试。`--llm off` 时回退到 `objects.yaml` 的确定性模型，结果可复现；
 所有调用写 `output/audit/agent_trace.jsonl`。
+
+**图谱写入**：默认 `full`（整图重建，同一输入可复现）；`--graph-mode incremental` 按主键
+upsert 节点/边并保留历史，`graph_history.jsonl` 记录每次运行的差量。
 
 M1 包含：
 
