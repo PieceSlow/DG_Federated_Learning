@@ -58,6 +58,9 @@ code_repo/
 ├── run.py                      # 唯一入口
 ├── governance/
 │   ├── pipeline.py             # 阶段编排（LangGraph StateGraph）
+│   ├── agents/                 # 智能体基座（M1）：协议、视图、Supervisor
+│   ├── llm/                    # LLM 接入：provider/缓存/预算/审计
+│   ├── prompts/                # 各 Agent 的 prompt（YAML，带版本）
 │   ├── config.py               # 路径与运行参数
 │   ├── context.py              # 运行上下文：状态、审计、问题清单
 │   ├── meds.py                 # MEDS 规范适配：schema、编码格式、划分
@@ -180,7 +183,37 @@ python -m unittest tests.test_integration_synthetic -v   # 端到端
 - 单元测试覆盖：配置与路径、ICD 章节与敏感级别、MEDS schema、质量规则、文本抽取、阶段编排；
 - 集成测试用合成数据跑完 11 个阶段，并断言产物齐全、schema 通过、三类质量问题被触发。
 
-## 九、文档
+## 九、Agent 基座（M1，默认关闭）
+
+智能体层与现有流水线**解耦**：`python run.py` 的行为、阶段数、产物路径完全不变；
+Agent 只有显式调用时才工作。
+
+```powershell
+python -m governance.agents.demo              # mock 演示：零网络、零成本
+python -m governance.agents.demo --llm off    # 演示关闭时明确报错、优雅降级
+python -m governance.agents.demo --mimic-root "E:\mimic-iv数据\mimic-iv-3.1"  # 用真实表结构
+```
+
+M1 包含：
+
+| 模块 | 作用 |
+|---|---|
+| `agents/base.py` | Agent 协议：role/goal/inputs/outputs/tools + `AgentResult` + trace |
+| `agents/views.py` | 视图层：把本地数据压成 schema/统计/候选视图，并做患者数据闸门 |
+| `agents/supervisor.py` | 分派 + 校验 + 带反馈重试（骨架） |
+| `agents/profiler.py` | SourceProfilerAgent：第一个可跑的 Agent |
+| `llm/` | provider（off/mock/api）、响应缓存、预算护栏、`llm_usage.jsonl` |
+| `prompts/profiler.yaml` | prompt 与输出 JSON schema，版本化 |
+
+安全约束：
+
+- 所有出域内容必须经 `views.py`，`require_no_patient_data` 会拦截患者标识/时间戳/文本；
+- 默认 `--llm off`；`mock` 不联网；`api` 需要 `DEEPSEEK_API_KEY`，key 不入库；
+- 审计：`output/audit/agent_trace.jsonl`、`output/audit/llm_usage.jsonl`（`output/` 已被忽略）。
+
+文本抽取仍走**本地规则 + 经典 NLP**，与 Agent 层无关。
+
+## 十、文档
 
 | 文档 | 内容 |
 |---|---|
@@ -194,7 +227,7 @@ python -m unittest tests.test_integration_synthetic -v   # 端到端
 | [docs/08-协作与代码约定.md](docs/08-协作与代码约定.md) | 分支、提交、命名、测试约定 |
 | [docs/附录-实验交付对照.md](docs/附录-实验交付对照.md) | 与课程两次实验的交付对应关系 |
 
-## 十、第三方组件
+## 十一、第三方组件
 
 `third_party/meds/` 是 MEDS 官方 `src/meds/schema.py` 的原样副本（Apache-2.0），
 仅用于按官方 schema 校验产物，声明见 `third_party/meds/NOTICE.md`。其余代码均为本组原创。

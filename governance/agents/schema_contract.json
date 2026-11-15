@@ -1,0 +1,49 @@
+{
+  "note": "MIMIC-IV 3.1 关键表结构契约：只有表名与列名，不含任何患者数据。用于无数据时的 Agent 演示。",
+  "tables": [
+    {
+      "table": "patients",
+      "columns": ["subject_id", "gender", "anchor_age", "anchor_year", "anchor_year_group", "dod"]
+    },
+    {
+      "table": "admissions",
+      "columns": ["subject_id", "hadm_id", "admittime", "dischtime", "admission_type", "admission_location", "discharge_location", "insurance", "language", "marital_status", "race", "hospital_expire_flag"]
+    },
+    {
+      "table": "icustays",
+      "columns": ["subject_id", "hadm_id", "stay_id", "first_careunit", "last_careunit", "intime", "outtime", "los"]
+    },
+    {
+      "table": "diagnoses_icd",
+      "columns": ["subject_id", "hadm_id", "seq_num", "icd_code", "icd_version"]
+    },
+    {
+      "table": "procedures_icd",
+      "columns": ["subject_id", "hadm_id", "seq_num", "icd_code", "icd_version", "chartdate"]
+    },
+    {
+      "table": "prescriptions",
+      "columns": ["subject_id", "hadm_id", "pharmacy_id", "starttime", "stoptime", "drug_type", "drug", "formulary_drug_cd", "dose_val_rx", "dose_unit_rx", "route"]
+    },
+    {
+      "table": "labevents",
+      "columns": ["labevent_id", "subject_id", "hadm_id", "specimen_id", "itemid", "charttime", "value", "valuenum", "valueuom", "flag"]
+    },
+    {
+      "table": "d_labitems",
+      "columns": ["itemid", "label", "fluid", "category"]
+    },
+    {
+      "table": "d_icd_diagnoses",
+      "columns": ["icd_code", "icd_version", "long_title"]
+    },
+    {
+      "table": "d_icd_procedures",
+      "columns": ["icd_code", "icd_version", "long_title"]
+    },
+    {
+      "table": "discharge",
+      "columns": ["note_id", "subject_id", "hadm_id", "note_type", "note_seq", "charttime", "storetime", "text"]
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+id: profiler
+version: "1.0"
+system: |
+  你是医疗数据治理流水线中的"数据源画像"智能体。
+  你会收到若干张表的结构视图（表名、列名、类型、行数）和统计视图（各列空值率）。
+  你的任务是：
+  1) 识别数据中可作为"对象"的实体（人 / 物 / 关系），给出主键与判断理由；
+  2) 识别对象之间的关系（from / to / on / cardinality）；
+  3) 指出结构层面的数据风险（缺时间字段、孤儿外键、粒度不一致、同名不同义等）。
+
+  约束：
+  - 只依据给定视图判断，不要臆测字段取值；
+  - 不要求、也不要输出任何患者标识或行级数据；
+  - 只输出 JSON，顶层字段为 objects / relations / risks。
+
+output_schema:
+  type: object
+  required: [objects, relations, risks]
+  properties:
+    objects:
+      type: array
+      items:
+        type: object
+        required: [name, keys, reason]
+        properties:
+          name: {type: string}
+          keys: {type: array, items: {type: string}}
+          reason: {type: string}
+    relations:
+      type: array
+      items:
+        type: object
+        required: [from, to, on, cardinality]
+        properties:
+          from: {type: string}
+          to: {type: string}
+          "on": {type: string}
+          cardinality: {type: string}
+    risks:
+      type: array
+      items:
+        type: object
+        properties:
+          code: {type: string}
+          detail: {type: string}

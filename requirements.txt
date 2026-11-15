@@ -4,5 +4,9 @@ pyarrow>=14
 langgraph>=1.0
 flexible-schema>=0.1
 
+# Agent 层：prompt 文件（YAML）与 DeepSeek API 调用
+PyYAML>=6
+requests>=2.31
+
 # 可选：仅对象图谱绘图（tools 下的脚本）需要
 Pillow>=10
