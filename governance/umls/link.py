@@ -48,8 +48,18 @@ class ConceptLinker:
         self.terms = pd.read_parquet(cache_dir / "terms.parquet")
         self.concepts = pd.read_parquet(cache_dir / "concepts.parquet").set_index("cui")
 
-        code_terms = self.terms[self.terms["sab"].isin({"ICD10CM", "ICD9CM", "ICD10PCS"})]
-        code_terms = code_terms.sort_values("ispref", ascending=False).drop_duplicates(["sab", "code"])
+        code_terms = self.terms[self.terms["sab"].isin({"ICD10CM", "ICD9CM", "ICD10PCS"})].copy()
+        # 同一编码可能有多个 CUI：优先有语义类型、首选术语（PT）、ISPREF=Y 的候选
+        sty_present = self.concepts["sty"].fillna("").astype(str).str.strip().ne("")
+        code_terms["_has_sty"] = code_terms["cui"].map(sty_present).fillna(False).astype(int)
+        code_terms["_is_pt"] = (code_terms["tty"] == "PT").astype(int)
+        code_terms["_is_pref"] = (code_terms["ispref"] == "Y").astype(int)
+        code_terms = (
+            code_terms.sort_values(
+                ["sab", "code", "_has_sty", "_is_pt", "_is_pref"],
+                ascending=[True, True, False, False, False],
+            ).drop_duplicates(["sab", "code"])
+        )
         self._code_index = {
             (sab, code): cui
             for sab, code, cui in zip(code_terms["sab"], code_terms["code"], code_terms["cui"])
@@ -57,6 +67,7 @@ class ConceptLinker:
 
         self._lexicon: dict[str, dict[str, tuple[str, str]]] = {}
         self._lexicon_keys: dict[str, list[str]] = {}
+        self._token_index: dict[str, dict[str, set[str]]] = {}
         for sab in ("RXNORM", "LNC"):
             subset = self.terms[self.terms["sab"] == sab]  # 保留同义术语，不只取每个 CUI 的首选词
             mapping: dict[str, tuple[str, str]] = {}
@@ -66,6 +77,12 @@ class ConceptLinker:
                     mapping[key] = (cui, str(term))
             self._lexicon[sab] = mapping
             self._lexicon_keys[sab] = list(mapping)
+            token_index: dict[str, set[str]] = {}
+            for key in mapping:
+                for token in set(key.split()):
+                    if len(token) >= 3:
+                        token_index.setdefault(token, set()).add(key)
+            self._token_index[sab] = token_index
         self._cache: dict[tuple[str, str], ConceptMatch | None] = {}
 
     # ---- 对外 ------------------------------------------------------------
@@ -119,7 +136,7 @@ class ConceptLinker:
             self._cache[cache_key] = match
             return match
 
-        candidates = self._lexicon_keys[sab]
+        candidates = self._fuzzy_candidates(sab, key)
         best = get_close_matches(key, candidates, n=1, cutoff=cutoff)
         if not best:
             self._cache[cache_key] = None
@@ -128,6 +145,18 @@ class ConceptLinker:
         match = self._match(self._lexicon[sab][best[0]][0], score, "term_fuzzy")
         self._cache[cache_key] = match
         return match
+
+
+    def _fuzzy_candidates(self, sab: str, key: str) -> list[str]:
+        """用最稀有的 token 缩小模糊匹配候选，避免每次扫 20 万条术语。"""
+        tokens = [token for token in key.split() if len(token) >= 3]
+        sets = [self._token_index[sab].get(token) for token in tokens]
+        sets = [item for item in sets if item]
+        if sets:
+            candidate = min(sets, key=len)
+            if 0 < len(candidate) <= 20_000:
+                return list(candidate)
+        return self._lexicon_keys[sab]
 
 
 def _code_candidates(code: str) -> list[str]:

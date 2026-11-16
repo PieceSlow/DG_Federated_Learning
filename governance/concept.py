@@ -106,8 +106,12 @@ def run(ctx: GovernanceContext) -> None:
             record("RXNORM", name, name, linker.map_drug(name), "prescriptions")
 
     lab_items = tables.get("d_labitems")
+    lab_events = tables.get("labevents")
     if lab_items is not None and "label" in lab_items.columns:
         subset = lab_items.drop_duplicates("itemid")[["itemid", "label"]]
+        if lab_events is not None and "itemid" in lab_events.columns:
+            used = set(pd.to_numeric(lab_events["itemid"], errors="coerce").dropna().astype("int64"))
+            subset = subset[subset["itemid"].isin(used)]
         for _, row in subset.iterrows():
             label = str(row["label"])
             record("LNC", label, label, linker.map_lab(label), "d_labitems")
@@ -130,13 +134,24 @@ def run(ctx: GovernanceContext) -> None:
         for key in ("total", "mapped", "exact", "fuzzy")
     }
     totals["coverage"] = round(totals["mapped"] / totals["total"], 4) if totals["total"] else None
+    mapped_concepts = (
+        concept_map[["cui", "sty"]].drop_duplicates("cui") if not concept_map.empty
+        else pd.DataFrame(columns=["cui", "sty"])
+    )
+    missing_sty = mapped_concepts[
+        mapped_concepts["sty"].fillna("").astype(str).str.strip().eq("")
+    ]
     report = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "umls_version": UMLS_VERSION,
         "cache": str(cache),
         "sources": coverage,
         "overall": totals,
-        "mapped_concepts": int(concept_map["cui"].nunique()) if not concept_map.empty else 0,
+        "mapped_concepts": int(len(mapped_concepts)),
+        "missing_sty": {
+            "count": int(len(missing_sty)),
+            "examples": missing_sty["cui"].head(10).tolist(),
+        },
     }
     (ctx.settings.governance / "quality").mkdir(parents=True, exist_ok=True)
     (ctx.settings.governance / "quality" / "concept_coverage.json").write_text(
