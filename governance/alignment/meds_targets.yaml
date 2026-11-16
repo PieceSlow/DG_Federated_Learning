@@ -1,0 +1,88 @@
+# MEDS 接口目标（助教确定，可信）
+# 只列 MEDS 核心 5 列；event_type 决定来源上下文与编码模板。
+# 注意：这里没有 n_diagnosis / total_los_days 等自造聚合。
+version: "meds-0.4"
+interface: MEDS
+event_types:
+  GENDER:
+    source_tables: [patients]
+    fields:
+      subject_id: {required: true, source_hint: "patients.subject_id"}
+      time: {required: false, note: "性别事件没有时间"}
+      code: {required: true, template: "GENDER//{gender}", source_hint: "patients.gender"}
+      numeric_value: {required: false}
+      text_value: {required: false}
+
+  ADMISSION:
+    source_tables: [admissions]
+    fields:
+      subject_id: {required: true, source_hint: "admissions.subject_id"}
+      time: {required: true, source_hint: "admissions.admittime"}
+      code: {required: true, template: "ADMISSION//{admission_type}"}
+      numeric_value: {required: false}
+      text_value: {required: false}
+
+  DISCHARGE:
+    source_tables: [admissions]
+    fields:
+      subject_id: {required: true, source_hint: "admissions.subject_id"}
+      time: {required: true, source_hint: "admissions.dischtime"}
+      code: {required: true, template: "DISCHARGE//{discharge_location}"}
+      numeric_value: {required: false}
+      text_value: {required: false}
+
+  ICU_STAY:
+    source_tables: [icustays]
+    fields:
+      subject_id: {required: true, source_hint: "icustays.subject_id"}
+      time: {required: true, source_hint: "icustays.intime"}
+      code: {required: true, template: "ICU_STAY//{first_careunit}"}
+      numeric_value: {required: false}
+      text_value: {required: false}
+
+  ICU_DISCHARGE:
+    source_tables: [icustays]
+    fields:
+      subject_id: {required: true, source_hint: "icustays.subject_id"}
+      time: {required: true, source_hint: "icustays.outtime"}
+      code: {required: true, template: "ICU_DISCHARGE//HOSPITAL"}
+      numeric_value: {required: false}
+      text_value: {required: false}
+
+  DIAGNOSIS:
+    source_tables: [diagnoses_icd, admissions, d_icd_diagnoses]
+    joins:
+      admissions: {on: hadm_id}
+    fields:
+      subject_id: {required: true, source_hint: "diagnoses_icd.subject_id"}
+      time: {required: true, source_hint: "admissions.admittime"}
+      code: {required: true, template: "DIAGNOSIS//ICD{icd_version}//{icd_code}"}
+      numeric_value: {required: false}
+      text_value: {required: false, note: "MEDS 不要求诊断文本"}
+
+  LAB:
+    source_tables: [labevents, d_labitems]
+    fields:
+      subject_id: {required: true, source_hint: "labevents.subject_id"}
+      time: {required: true, source_hint: "labevents.charttime"}
+      code: {required: true, template: "LAB//MIMIC_ITEM//{itemid}//{valueuom}"}
+      numeric_value: {required: true, source_hint: "labevents.valuenum"}
+      text_value: {required: false, source_hint: "labevents.value"}
+
+  MEDICATION:
+    source_tables: [prescriptions]
+    fields:
+      subject_id: {required: true, source_hint: "prescriptions.subject_id"}
+      time: {required: true, source_hint: "prescriptions.starttime"}
+      code: {required: true, template: "MEDICATION//MIMIC_FORMULARY//{formulary_drug_cd}"}
+      numeric_value: {required: false, source_hint: "prescriptions.dose_val_rx"}
+      text_value: {required: false, source_hint: "prescriptions.drug"}
+
+  NOTE:
+    source_tables: [discharge]
+    fields:
+      subject_id: {required: true, source_hint: "discharge.subject_id"}
+      time: {required: true, source_hint: "discharge.charttime"}
+      code: {required: true, template: "NOTE//{note_type}"}
+      numeric_value: {required: false}
+      text_value: {required: true, source_hint: "discharge.text"}

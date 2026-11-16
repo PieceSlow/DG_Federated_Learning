@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -206,6 +207,8 @@ class LLMService:
 
         response = self.provider.complete(request, self.config)
         cost = self.budget.record(response.prompt_tokens, response.completion_tokens)
+        for message in self.budget.pop_warnings():
+            print(message, file=sys.stderr)
         if self.cache is not None:
             self.cache.put(key, response.to_dict())
         if self.usage is not None:

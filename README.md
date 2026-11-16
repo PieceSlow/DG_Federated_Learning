@@ -12,6 +12,11 @@
 > **红线**：仓库只提交代码与说明文档。`output/` 下的患者级/文本级派生数据受 PhysioNet
 > 协议约束，禁止提交、打包或外发，详见 [docs/07-数据与合规.md](docs/07-数据与合规.md)。
 
+> **2026-11-16 重构**：旧 `clinical_events` / `patient_360` / 33 条字段映射已被判定为
+> 中间设计，归档到 `_archive/untrusted_20261116/`，不再作为对齐目标或评测依据。
+> 字段对齐目标改为 **MEDS 接口**（`governance/alignment/meds_targets.yaml`）；
+> 自造聚合（`n_diagnosis`、`total_los_days` 等）归入标签层。
+
 ---
 
 ## 一、流水线的 12 个阶段
@@ -23,7 +28,7 @@
 | 03 | 质量校验 | 编码/关联/时间/重复校验 + MEDS 核心 schema | `quality/issues.csv` |
 | 04 | 事件仓储 | 按 MEDS 目录落盘，写盘后重新读回再校验 | `eventstore/` |
 | 05 | 多源汇聚 | 统一事件表 + 患者 360 宽表 | `dataset/*.parquet` |
-| 06 | 字段对齐 | gold 33 + 匹配器候选（P/R）+（可选）AlignerAgent 提案/驳回 + SQL 对账 | `mapping/*`、`build_clinical_events.sql` |
+| 06 | 字段对齐 | 目标接口 = **MEDS**（旧 33 字段已弃用）；匹配器/组合器/约束/选择器重构中 | `mapping/*`、`build_clinical_events.sql` |
 | 07 | 概念归一 | UMLS 编码/药名/检验名 → 概念（CUI）与语义类型 | `concept_map.parquet`、`concept_coverage.json` |
 | 08 | 对象化 | 智能体提案对象/关系 → 本地实例化（可回退确定性模型）+ 图谱自检 | `graph/nodes.parquet`、`graph/edges/*`、`object_graph.json` |
 | 09 | 标签化 | 6 个技术维度 + 对象级业务标签（事实/派生/画像/手动） | `labels.json`、`labels/object_labels.parquet` |
@@ -90,6 +95,10 @@ code_repo/
 ```
 
 ## 三、快速开始
+
+> API key 放 `code_repo/.env`（复制 `.env.example`），不要写入仓库；默认预算 **20 元**，
+> 50%/80% 告警、100% 停止。详见 [docs/00-本地运行与密钥.md](docs/00-本地运行与密钥.md)。
+
 
 ```powershell
 # 1. 安装依赖（国内网络建议加镜像：-i https://pypi.tuna.tsinghua.edu.cn/simple）
@@ -253,7 +262,8 @@ M1 包含：
 | [docs/01-总体设计.md](docs/01-总体设计.md) | 场景、架构、阶段与数据流、口径一致性 |
 | [docs/02-数据接入与标准化.md](docs/02-数据接入与标准化.md) | 队列抽样、分块扫描、编码命名空间、文本分支 |
 | [docs/03-质量校验与事件仓储.md](docs/03-质量校验与事件仓储.md) | 校验规则、MEDS 落盘、读回复验 |
-| [docs/04-汇聚与对齐.md](docs/04-汇聚与对齐.md) | 事件表与患者 360、字段级/记录级映射 |
+| [docs/00-本地运行与密钥.md](docs/00-本地运行与密钥.md) | `.env`、API key、20 元预算、小批量实验 |
+| [docs/04-汇聚与对齐.md](docs/04-汇聚与对齐.md) | 事件表与患者 360、字段级/记录级映射（待按 MEDS 目标重构） |
 | [docs/05-对象化与标签化.md](docs/05-对象化与标签化.md) | 对象模型、对象图谱、标签体系 |
 | [docs/06-分类分级与编目.md](docs/06-分类分级与编目.md) | 分级规则、五级目录、共享边界 |
 | [docs/07-数据与合规.md](docs/07-数据与合规.md) | 许可、分级处置、仓库红线、误提交处理 |

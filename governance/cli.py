@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from governance import pipeline
-from governance.llm import Budget, LLMConfig, LLMUnavailable, build_service
+from governance.llm import Budget, LLMConfig, LLMUnavailable, build_service, load_env_file
 from governance.config import (
     Settings,
     default_mimic_root,
@@ -39,8 +39,12 @@ def build_parser() -> argparse.ArgumentParser:
                         default=os.environ.get("LLM_PROVIDER", "off"),
                         help="智能体推理内核：off（默认，确定性建图）/ mock / api")
     parser.add_argument("--llm-model", default=os.environ.get("LLM_MODEL", "deepseek-flash"))
-    parser.add_argument("--llm-budget-usd", type=float,
-                        default=float(os.environ.get("LLM_BUDGET_USD", "1.0")))
+    parser.add_argument("--llm-budget-cny", type=float,
+                        default=float(os.environ.get("LLM_BUDGET_CNY", "20")))
+    parser.add_argument("--llm-budget-usd", type=float, default=None,
+                        help="可选：按美元设预算；与 --llm-budget-cny 同时给时取更小值")
+    parser.add_argument("--llm-usd-cny", type=float,
+                        default=float(os.environ.get("LLM_USD_CNY", "7.2")))
     parser.add_argument("--llm-max-calls", type=int,
                         default=int(os.environ.get("LLM_MAX_CALLS", "200")))
     parser.add_argument("--graph-mode", choices=["full", "incremental"],
@@ -55,6 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_env_file()
     args = build_parser().parse_args(argv)
 
     if args.list_stages:
@@ -93,7 +98,12 @@ def main(argv: list[str] | None = None) -> int:
             llm = build_service(
                 config,
                 settings.output,
-                budget=Budget(max_calls=args.llm_max_calls, max_usd=args.llm_budget_usd),
+                budget=Budget(
+                    max_calls=args.llm_max_calls,
+                    max_usd=args.llm_budget_usd,
+                    max_cny=args.llm_budget_cny,
+                    usd_to_cny=args.llm_usd_cny,
+                ),
             )
         except LLMUnavailable as exc:
             print(f"无法启用智能体：{exc}", file=sys.stderr)
