@@ -24,7 +24,7 @@ class Budget:
     usd_to_cny: float = 7.2
     input_usd_per_m: float = 0.30
     output_usd_per_m: float = 1.20
-    warn_at: tuple[float, ...] = (0.5, 0.8)
+    warn_at: tuple[float, ...] = (0.5, 0.8, 1.0)
 
     calls: int = 0
     usd: float = 0.0
