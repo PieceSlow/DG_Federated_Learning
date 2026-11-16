@@ -12,6 +12,8 @@
 > **红线**：仓库只提交代码与说明文档。`output/` 下的患者级/文本级派生数据受 PhysioNet
 > 协议约束，禁止提交、打包或外发，详见 [docs/07-数据与合规.md](docs/07-数据与合规.md)。
 
+> **新接手先读 [START_HERE.md](START_HERE.md)**。
+
 > **2026-11-16 重构**：旧 `clinical_events` / `patient_360` / 33 条字段映射已被判定为
 > 中间设计，归档到 `_archive/untrusted_20261116/`，不再作为对齐目标或评测依据。
 > 字段对齐目标改为 **MEDS 接口**（`governance/alignment/meds_targets.yaml`）；
