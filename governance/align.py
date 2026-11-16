@@ -134,7 +134,16 @@ def run(ctx: GovernanceContext) -> None:
     dest = ctx.settings.governance / "mapping"
     dest.mkdir(parents=True, exist_ok=True)
     field_map.to_csv(dest / "field_level.csv", index=False, encoding="utf-8-sig")
-    field_map.to_csv(dest / "field_level_gold.csv", index=False, encoding="utf-8-sig")
+    # 旧 33 条是 AI 草稿，不是人工 gold；改名为 reference，避免误用
+    field_map.to_csv(dest / "field_level_reference.csv", index=False, encoding="utf-8-sig")
+    (dest / "LEGACY.md").write_text(
+        "# LEGACY：旧 33 字段对齐\n\n"
+        "本目录的 `field_level*.csv`、`record_level.parquet`、`build_clinical_events.sql`\n"
+        "来自旧的 33 字段/`patient_360` 实验，已被判定为中间设计。\n"
+        "**不要用于评测、训练或交付结论。**\n\n"
+        "新目标接口：`governance/alignment/meds_targets.yaml`（MEDS）。\n",
+        encoding="utf-8",
+    )
     selected.to_csv(dest / "field_level_auto.csv", index=False, encoding="utf-8-sig")
     if agent_selected is not None and not agent_selected.empty:
         agent_selected.to_csv(dest / "field_level_agent.csv", index=False, encoding="utf-8-sig")

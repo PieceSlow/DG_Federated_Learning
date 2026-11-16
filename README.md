@@ -27,7 +27,7 @@
 | 02 | 组织与标准化 | 对象索引、跨表关联、事件映射、出院小结文本抽取 | 队列与事件（内存） |
 | 03 | 质量校验 | 编码/关联/时间/重复校验 + MEDS 核心 schema | `quality/issues.csv` |
 | 04 | 事件仓储 | 按 MEDS 目录落盘，写盘后重新读回再校验 | `eventstore/` |
-| 05 | 多源汇聚 | 统一事件表 + 患者 360 宽表 | `dataset/*.parquet` |
+| 05 | 多源汇聚 | 旧分析视图（legacy） | `dataset/*.parquet`（不作匹配目标） |
 | 06 | 字段对齐 | 目标接口 = **MEDS**（旧 33 字段已弃用）；匹配器/组合器/约束/选择器重构中 | `mapping/*`、`build_clinical_events.sql` |
 | 07 | 概念归一 | UMLS 编码/药名/检验名 → 概念（CUI）与语义类型 | `concept_map.parquet`、`concept_coverage.json` |
 | 08 | 对象化 | 智能体提案对象/关系 → 本地实例化（可回退确定性模型）+ 图谱自检 | `graph/nodes.parquet`、`graph/edges/*`、`object_graph.json` |
@@ -154,8 +154,8 @@ output/
 │   ├── data/events.parquet
 │   └── metadata/{codes.parquet, subject_splits.parquet, dataset.json}
 ├── governance/                       # 治理资产
-│   ├── dataset/{clinical_events.parquet, patient_360.parquet}
-│   ├── mapping/{field_level.csv, field_level_gold.csv, field_level_auto.csv,
+│   ├── dataset/{clinical_events.parquet, patient_360.parquet}   # legacy 分析视图
+│   ├── mapping/{field_level.csv, field_level_reference.csv, field_level_auto.csv,   # legacy
 │   │             field_level_agent.csv, record_level.parquet,
 │   │             match_candidates.parquet, build_clinical_events.sql}
 │   ├── graph/{nodes.parquet, edges/*.parquet, graph_manifest.json, graph_history.jsonl}
