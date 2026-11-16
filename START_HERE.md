@@ -42,6 +42,9 @@ python -m venv .venv
 
 数据目录要求：`--mimic-root` 下有 `hosp/`、`icu/`；`--note-root` 下有 `note/discharge.csv.gz`。
 
+> **数据与密钥不随仓库转发**：MIMIC-IV 需要 PhysioNet 认证，UMLS 需要许可证，API key 需要接手人自己的。
+> 不要把 `_mimic_data/`、`output/`、`.env` 打包发给别人。
+
 ### API key（只放本地）
 
 ```powershell
