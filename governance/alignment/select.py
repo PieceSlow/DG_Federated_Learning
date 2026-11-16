@@ -24,6 +24,9 @@ CANDIDATE_COLUMNS = [
     "value_score",
     "score",
     "rank",
+    "source_dtype",
+    "target_dtype",
+    "source_null_rate",
 ]
 
 SELECT_COLUMNS = [
@@ -63,9 +66,12 @@ def build_candidates(
                     "structure_score": parts["structure"],
                     "value_score": parts["value"],
                     "score": combine(parts, weights),
+                    "source_dtype": source.dtype,
+                    "target_dtype": target.dtype,
+                    "source_null_rate": source.null_rate,
                 }
             )
-    frame = pd.DataFrame(records, columns=CANDIDATE_COLUMNS[:-1])
+    frame = pd.DataFrame(records, columns=[c for c in CANDIDATE_COLUMNS if c != "rank"])
     if frame.empty:
         return pd.DataFrame(columns=CANDIDATE_COLUMNS)
     frame["rank"] = (

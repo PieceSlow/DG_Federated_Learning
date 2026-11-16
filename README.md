@@ -23,7 +23,7 @@
 | 03 | 质量校验 | 编码/关联/时间/重复校验 + MEDS 核心 schema | `quality/issues.csv` |
 | 04 | 事件仓储 | 按 MEDS 目录落盘，写盘后重新读回再校验 | `eventstore/` |
 | 05 | 多源汇聚 | 统一事件表 + 患者 360 宽表 | `dataset/*.parquet` |
-| 06 | 字段对齐 | gold 33 条 + 匹配器候选（P/R）+ 生成 SQL 并对账 | `mapping/*`、`build_clinical_events.sql` |
+| 06 | 字段对齐 | gold 33 + 匹配器候选（P/R）+（可选）AlignerAgent 提案/驳回 + SQL 对账 | `mapping/*`、`build_clinical_events.sql` |
 | 07 | 概念归一 | UMLS 编码/药名/检验名 → 概念（CUI）与语义类型 | `concept_map.parquet`、`concept_coverage.json` |
 | 08 | 对象化 | 智能体提案对象/关系 → 本地实例化（可回退确定性模型）+ 图谱自检 | `graph/nodes.parquet`、`graph/edges/*`、`object_graph.json` |
 | 09 | 标签化 | 6 个技术维度 + 对象级业务标签（事实/派生/画像/手动） | `labels.json`、`labels/object_labels.parquet` |
@@ -147,15 +147,15 @@ output/
 ├── governance/                       # 治理资产
 │   ├── dataset/{clinical_events.parquet, patient_360.parquet}
 │   ├── mapping/{field_level.csv, field_level_gold.csv, field_level_auto.csv,
-│   │             record_level.parquet, match_candidates.parquet,
-│   │             build_clinical_events.sql}
+│   │             field_level_agent.csv, record_level.parquet,
+│   │             match_candidates.parquet, build_clinical_events.sql}
 │   ├── graph/{nodes.parquet, edges/*.parquet, graph_manifest.json, graph_history.jsonl}
 │   ├── metadata/{data_source_inventory.csv, object_graph.json,
 │   │             object_inventory.csv, labels.json}
 │   ├── labels/object_labels.parquet   # 对象级标签（object_type/object_id/key/value）
 │   ├── quality/{issues.csv, event_stream.json, governed_dataset.json,
 │   │             concept_coverage.json, alignment_report.json,
-│   │             sql_execution_report.json}
+│   │             sql_execution_report.json, alignment_agent_report.json}
 │   ├── classification/{rules.csv, result.csv}
 │   ├── metadata/concept_map.parquet          # 编码 → UMLS CUI
 │   └── quality/concept_coverage.json         # 概念覆盖率
@@ -214,6 +214,10 @@ python -m governance.agents.demo              # mock 演示：零网络、零成
 python -m governance.agents.demo --llm off    # 演示关闭时明确报错、优雅降级
 python -m governance.agents.demo --mimic-root "E:\mimic-iv数据\mimic-iv-3.1"  # 用真实表结构
 ```
+
+**P1-1c 对齐智能体**：`--llm mock/api` 时，`AlignerAgent` 从本地 top-k 候选中选映射，
+`AlignmentVerifierAgent` 用类型/空值率/候选合法性驳回，最多重试 2 次；
+`--llm off` 回退到匹配器选择。
 
 **M2.6a 智能体建图**：`ObjectFinderAgent`（提对象）→ 校验器（表/主键必须真实）→
 `RelationExtractorAgent`（提关系）→ 本地 `build_graph` 执行 → `GraphCriticAgent`（审缺陷）→

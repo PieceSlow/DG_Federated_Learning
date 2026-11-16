@@ -24,6 +24,7 @@ from governance.alignment import (
     select_mappings,
     targets_from_gold,
 )
+from governance.alignment.agentic import align_with_agents
 from governance.alignment.evaluate import evaluate
 from governance.alignment.sql import build_sql, validate_sql
 from governance.context import GovernanceContext, require_state
@@ -115,16 +116,37 @@ def run(ctx: GovernanceContext) -> None:
     selected = select_mappings(candidates)
     report = evaluate(selected, candidates, field_map)
 
+    agent_selected = None
+    agent_info: dict = {"status": "skipped", "reason": "provider=off"}
+    agent_report = None
+    if ctx.llm is not None and ctx.llm.config.provider != "off":
+        agent_selected, agent_info = align_with_agents(ctx, candidates, field_map)
+        if agent_selected is not None and not agent_selected.empty:
+            agent_report = evaluate(agent_selected, candidates, field_map)
+            agent_info.update(
+                {
+                    "precision": agent_report["precision"],
+                    "recall": agent_report["recall"],
+                    "top3_recall": agent_report["top3_recall"],
+                }
+            )
+
     dest = ctx.settings.governance / "mapping"
     dest.mkdir(parents=True, exist_ok=True)
     field_map.to_csv(dest / "field_level.csv", index=False, encoding="utf-8-sig")
     field_map.to_csv(dest / "field_level_gold.csv", index=False, encoding="utf-8-sig")
     selected.to_csv(dest / "field_level_auto.csv", index=False, encoding="utf-8-sig")
+    if agent_selected is not None and not agent_selected.empty:
+        agent_selected.to_csv(dest / "field_level_agent.csv", index=False, encoding="utf-8-sig")
     candidates.to_parquet(dest / "match_candidates.parquet", index=False)
     (ctx.settings.governance / "quality").mkdir(parents=True, exist_ok=True)
     (ctx.settings.governance / "quality" / "alignment_report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    if agent_report is not None:
+        (ctx.settings.governance / "quality" / "alignment_agent_report.json").write_text(
+            json.dumps(agent_info, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
     # SQL 生成 + SQLite 对账
     try:
@@ -155,6 +177,7 @@ def run(ctx: GovernanceContext) -> None:
                 "precision": report["precision"],
                 "recall": report["recall"],
                 "top3_recall": report["top3_recall"],
+                "agent": agent_info,
             },
             "sql_execution": sql_report,
         }
@@ -164,5 +187,6 @@ def run(ctx: GovernanceContext) -> None:
         f"人工确认映射 {len(field_map)} 条（gold）、记录级映射 {len(record_map)} 条；"
         f"匹配器生成 {len(selected)} 条候选映射，"
         f"P={report['precision']:.2f} / R={report['recall']:.2f} / Top3 R={report['top3_recall']:.2f}；"
-        f"SQL 对账 {sql_report.get('status')}（{sql_report.get('rows', 0)} 行）。",
+        f"SQL 对账 {sql_report.get('status')}（{sql_report.get('rows', 0)} 行）；"
+        f"智能体对齐 {agent_info.get('status')} / {agent_info.get('mappings', 0)} 条。",
     )

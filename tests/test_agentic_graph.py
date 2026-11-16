@@ -119,6 +119,14 @@ class PipelineWithAgentsTest(unittest.TestCase):
             self.assertTrue(ctx.stats["graph_agents"]["used"])
             self.assertTrue((settings.audit_dir / "agent_trace.jsonl").exists())
 
+            # 对齐智能体也在同一次运行中生效
+            self.assertTrue((settings.governance / "mapping" / "field_level_agent.csv").exists())
+            agent_report = json.loads(
+                (settings.governance / "quality" / "alignment_agent_report.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(agent_report["status"], "ok")
+            self.assertEqual(agent_report["attempts"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

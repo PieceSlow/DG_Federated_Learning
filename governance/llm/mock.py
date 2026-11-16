@@ -74,6 +74,30 @@ DEFAULT_RESPONSES: dict[str, Any] = {
             ]
         },
     ],
+    "aligner": [
+        # 第一次：候选里没有 patient_id，应被校验器驳回
+        {
+            "mappings": [
+                {"target_table": "clinical_events", "target_field": "event_time",
+                 "source_table": "admissions", "source_field": "patient_id",
+                 "confidence": 0.9, "reason": "时间字段"}
+            ]
+        },
+        # 第二次：修正为真实字段
+        {
+            "mappings": [
+                {"target_table": "clinical_events", "target_field": "subject_id",
+                 "source_table": "patients", "source_field": "subject_id",
+                 "confidence": 0.98, "reason": "同名主键"},
+                {"target_table": "clinical_events", "target_field": "hadm_id",
+                 "source_table": "admissions", "source_field": "hadm_id",
+                 "confidence": 0.98, "reason": "同名外键"},
+                {"target_table": "clinical_events", "target_field": "code",
+                 "source_table": "diagnoses_icd", "source_field": "icd_code",
+                 "confidence": 0.9, "reason": "诊断编码"}
+            ]
+        },
+    ],
     "graph_critic": {
         "issues": [
             {"code": "GRAPH_MISSING_RELATION", "severity": "warning",
