@@ -42,17 +42,17 @@ class Budget:
 
     def _limits(self) -> str:
         if self.max_usd is not None and self.max_cny is not None:
-            return f"${self.max_usd:.2f} / ¥{self.max_cny:.2f}"
+            return f"USD {self.max_usd:.2f} / CNY {self.max_cny:.2f}"
         if self.max_cny is not None:
-            return f"¥{self.max_cny:.2f}"
-        return f"${self.max_usd:.2f}" if self.max_usd is not None else "无"
+            return f"CNY {self.max_cny:.2f}"
+        return f"USD {self.max_usd:.2f}" if self.max_usd is not None else "无"
 
     def check(self) -> None:
         if self.calls >= self.max_calls:
             raise BudgetExceeded(f"已达到调用上限 {self.max_calls} 次")
         if self.usd >= self.limit_usd:
             raise BudgetExceeded(
-                f"已达到费用上限（{self._limits()}，已花 ¥{self.spent_cny:.2f}）"
+                f"已达到费用上限（{self._limits()}，已花 CNY {self.spent_cny:.2f}）"
             )
 
     def record(self, prompt_tokens: int, completion_tokens: int) -> float:
@@ -69,7 +69,7 @@ class Budget:
                 if ratio >= threshold and threshold not in self._warned:
                     self._warned.add(threshold)
                     self._warnings.append(
-                        f"[预算预警] 已用 {ratio:.0%}（¥{self.spent_cny:.2f} / {self._limits()}）"
+                        f"[预算预警] 已用 {ratio:.0%}（CNY {self.spent_cny:.2f} / {self._limits()}）"
                     )
         return cost
 
