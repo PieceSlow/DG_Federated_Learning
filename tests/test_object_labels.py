@@ -1,4 +1,4 @@
-"""对象级标签测试：事实/派生/画像规则、手动标签与存储。"""
+"""对象级标签测试：fact/derived/profile 规则、手动标签与 KV 存储。"""
 
 from __future__ import annotations
 
@@ -35,9 +35,12 @@ def _fixture(tmp: Path) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
 class DefinitionsTest(unittest.TestCase):
     def test_load_definitions(self) -> None:
         version, definitions = load_definitions()
-        self.assertEqual(version, "1.0")
+        self.assertEqual(version, "2.0")
         keys = {item.key for item in definitions}
-        self.assertTrue({"elderly", "long_stay", "high_followup_priority"} <= keys)
+        self.assertTrue(
+            {"L2.elderly", "L2.long_stay", "L4.high_followup_priority"} <= keys
+        )
+        self.assertTrue({"L1", "L2", "L3", "L4"} <= {item.layer for item in definitions})
         catalog = definitions_catalog(definitions)
         self.assertEqual(len(catalog), len(definitions))
 
@@ -54,31 +57,44 @@ class ComputeLabelsTest(unittest.TestCase):
         cls._tmp.cleanup()
 
     def _ids(self, key: str) -> set[str]:
-        subset = self.labels[self.labels["key"] == key]
+        subset = self.labels[self.labels["tag_key"] == key]
         return set(subset["object_id"])
 
     def test_fact_label_elderly(self) -> None:
-        self.assertEqual(self._ids("elderly"), {"Patient:1", "Patient:2"})
+        self.assertEqual(self._ids("L2.elderly"), {"Patient:1", "Patient:2"})
 
     def test_derived_label_long_stay(self) -> None:
-        self.assertEqual(self._ids("long_stay"), {"Encounter:12"})
+        self.assertEqual(self._ids("L2.long_stay"), {"Encounter:12"})
 
     def test_derived_label_polypharmacy_empty(self) -> None:
-        self.assertEqual(self._ids("polypharmacy"), set())
+        self.assertEqual(self._ids("L4.polypharmacy_encounter"), set())
 
     def test_profile_label_followup(self) -> None:
-        self.assertEqual(self._ids("high_followup_priority"), {"Encounter:12"})
+        self.assertEqual(self._ids("L4.high_followup_priority"), {"Encounter:12"})
 
     def test_icu_label(self) -> None:
-        self.assertEqual(self._ids("icu_long_stay"), {"ICUStay:22"})
+        self.assertEqual(self._ids("L2.icu_long_stay"), {"ICUStay:22"})
 
     def test_output_columns_and_values(self) -> None:
         self.assertEqual(
             list(self.labels.columns),
-            ["object_type", "object_id", "key", "value", "label_type", "source", "version", "computed_at"],
+            [
+                "object_type",
+                "object_id",
+                "tag_key",
+                "tag_value",
+                "layer",
+                "source",
+                "confidence",
+                "evidence",
+                "version",
+                "computed_at",
+            ],
         )
-        self.assertTrue((self.labels["value"] == "true").all())
-        self.assertTrue((self.labels["source"] == "rule").all())
+        rule_rows = self.labels[self.labels["source"] == "rule"]
+        self.assertTrue((rule_rows["tag_value"] == "true").all())
+        self.assertTrue((rule_rows["confidence"] == 1.0).all())
+        self.assertTrue({"rule", "attribute"} <= set(self.labels["source"]))
 
 
 class ManualLabelTest(unittest.TestCase):
@@ -88,20 +104,22 @@ class ManualLabelTest(unittest.TestCase):
             tables, notes = _fixture(root)
             manual = root / "manual.csv"
             manual.write_text(
-                "object_type,object_id,key,value\n"
-                "Patient,Patient:3,manual_followup,yes\n"
-                "Patient,Patient:1,elderly,false\n",
+                "object_type,object_id,tag_key,tag_value\n"
+                "Patient,Patient:3,L4.manual_followup,yes\n"
+                "Patient,Patient:1,L2.elderly,false\n",
                 encoding="utf-8",
             )
             labels = compute_labels(tables, notes=notes, manual_path=manual)
 
             manual_rows = labels[labels["source"] == "manual"]
             self.assertEqual(len(manual_rows), 2)
-            patient1 = labels[(labels["object_id"] == "Patient:1") & (labels["key"] == "elderly")]
-            self.assertEqual(patient1["value"].tolist(), ["false"])
+            patient1 = labels[
+                (labels["object_id"] == "Patient:1") & (labels["tag_key"] == "L2.elderly")
+            ]
+            self.assertEqual(patient1["tag_value"].tolist(), ["false"])
             self.assertEqual(patient1["source"].tolist(), ["manual"])
 
-            elderly = labels[labels["key"] == "elderly"]
+            elderly = labels[labels["tag_key"] == "L2.elderly"]
             self.assertEqual(len(elderly), 2)  # Patient:1（手动 false）+ Patient:2（自动 true）
 
 

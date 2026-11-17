@@ -25,6 +25,7 @@ from governance.alignment import (
     targets_from_gold,
 )
 from governance.alignment.agentic import align_with_agents
+from governance.alignment.crosswalk import build_meds_crosswalk, validate_crosswalk
 from governance.alignment.evaluate import evaluate
 from governance.alignment.sql import build_sql, validate_sql
 from governance.context import GovernanceContext, require_state
@@ -134,14 +135,18 @@ def run(ctx: GovernanceContext) -> None:
     dest = ctx.settings.governance / "mapping"
     dest.mkdir(parents=True, exist_ok=True)
     field_map.to_csv(dest / "field_level.csv", index=False, encoding="utf-8-sig")
-    # 旧 33 条是 AI 草稿，不是人工 gold；改名为 reference，避免误用
-    field_map.to_csv(dest / "field_level_reference.csv", index=False, encoding="utf-8-sig")
-    (dest / "LEGACY.md").write_text(
-        "# LEGACY：旧 33 字段对齐\n\n"
-        "本目录的 `field_level*.csv`、`record_level.parquet`、`build_clinical_events.sql`\n"
-        "来自旧的 33 字段/`patient_360` 实验，已被判定为中间设计。\n"
-        "**不要用于评测、训练或交付结论。**\n\n"
-        "新目标接口：`governance/alignment/meds_targets.yaml`（MEDS）。\n",
+    meds_crosswalk = build_meds_crosswalk()
+    validate_crosswalk(meds_crosswalk)
+    meds_crosswalk.to_csv(dest / "field_level_meds.csv", index=False, encoding="utf-8-sig")
+    ctx.field_map_meds = meds_crosswalk
+    (dest / "MAPPING.md").write_text(
+        "# 字段映射说明\n\n"
+        "本目录同时保留两套映射，用途不同：\n\n"
+        "* `field_level.csv`：**对象字段映射**（33 条），说明数据集字段 → 源表/源字段/转换；\n"
+        "* `field_level_meds.csv`：**MEDS 交叉表**，说明 MEDS 9 类事件 × 5 个核心字段由哪些源字段提供；\n"
+        "* `record_level.parquet`：记录级血缘，每条数据集记录 → 源表 + 源记录 ID。\n\n"
+        "两套映射不是替代关系：前者服务课程实验的字段映射表，后者服务 MEDS 对外接口。\n"
+        "`field_level_auto.csv` / `field_level_agent.csv` 是匹配器与智能体的候选结果，供对照。\n",
         encoding="utf-8",
     )
     selected.to_csv(dest / "field_level_auto.csv", index=False, encoding="utf-8-sig")
@@ -179,6 +184,7 @@ def run(ctx: GovernanceContext) -> None:
     ctx.stats.update(
         {
             "field_mappings": int(len(field_map)),
+            "meds_field_mappings": int(len(meds_crosswalk)),
             "record_mappings": int(len(record_map)),
             "alignment": {
                 "candidates": int(len(candidates)),
@@ -193,7 +199,8 @@ def run(ctx: GovernanceContext) -> None:
     )
     ctx.log(
         "字段对齐",
-        f"人工确认映射 {len(field_map)} 条（gold）、记录级映射 {len(record_map)} 条；"
+        f"对象字段映射 {len(field_map)} 条、MEDS 交叉表 {len(meds_crosswalk)} 条、"
+        f"记录级映射 {len(record_map)} 条；"
         f"匹配器生成 {len(selected)} 条候选映射，"
         f"P={report['precision']:.2f} / R={report['recall']:.2f} / Top3 R={report['top3_recall']:.2f}；"
         f"SQL 对账 {sql_report.get('status')}（{sql_report.get('rows', 0)} 行）；"

@@ -1,14 +1,14 @@
-"""阶段 08 · 标签化。
+"""阶段 09 · 标签化（KV 对象标签）。
 
-标签不是"再算几个字段"，而是给数据资产建立可检索、可分级、可共享的语义层。本模块定义
-四类标签并汇总成标签清单：
+标签不是"再算几个字段"，而是打在数据对象上的 KV 断言：
+``object_type + object_id + tag_key + tag_value``。本阶段同时输出：
 
-* **对象类型**：Diagnosis / Procedure / Prescription / ClinicalNote；
-* **术语体系**：ICD9 / ICD10 / MIMIC_FORMULARY / MIMIC_NOTE；
-* **语义章节**：ICD 章节（粗粒度病种画像）；
-* **敏感级别**：L1 公开 / L2 受控共享 / L3 仅本地。
+* ``labels/object_labels.parquet``：对象标签长表（L1–L4）；
+* ``labels/tag_dictionary.csv``：标签字典（定义、层、口径、来源）；
+* ``metadata/labels.json``：字段统计 + 标签体系汇总 + 覆盖率。
 
-标签定义集中在这里，避免"同一个患者在不同表里被标成不同级别"。
+"医学标签强化"只对应 L3 概念级（``L3.cui`` / ``L3.semantic_type``），由 UMLS
+``concept_map`` 提供；没有 UMLS 时 ``L3.semantic_type`` 降级为 ICD 章节，不生成 CUI。
 """
 
 from __future__ import annotations
@@ -80,7 +80,8 @@ ICD9_CHAPTERS = [
     (800, 999, "Injury and poisoning"),
 ]
 
-TAG_DIMENSIONS = {
+#: 字段统计维度：这些是列/元数据，不是 KV 标签。
+FIELD_STATISTICS = {
     "event_type": "对象类型：诊疗事件属于哪一类对象",
     "code_system": "术语体系：编码来自哪套标准",
     "icd_chapter": "语义章节：按 ICD 编码归入的疾病/操作章节",
@@ -148,88 +149,123 @@ def _value_counts(series: pd.Series, top: int | None = None) -> dict[str, int]:
     return {str(k): int(v) for k, v in counts.items()}
 
 
+def _coverage(object_labels: pd.DataFrame, events: pd.DataFrame, tables: dict[str, pd.DataFrame]) -> dict[str, dict]:
+    def covered(object_type: str) -> set[str]:
+        subset = object_labels[object_labels["object_type"] == object_type]
+        return set(subset["object_id"])
+
+    event_ids = {"Event:" + str(value) for value in events["record_id"]}
+    patient_ids = {"Patient:" + str(value) for value in tables["patients"]["subject_id"]}
+    concept_ids = {
+        f"Concept:{system}:{code}"
+        for system, code in events[["code_system", "code"]].dropna().drop_duplicates().itertuples(index=False)
+    }
+    return {
+        "Event": {
+            "total": len(event_ids),
+            "labeled": len(covered("Event") & event_ids),
+            "ratio": round(len(covered("Event") & event_ids) / len(event_ids), 4) if event_ids else 0.0,
+        },
+        "Patient": {
+            "total": len(patient_ids),
+            "labeled": len(covered("Patient") & patient_ids),
+            "ratio": round(len(covered("Patient") & patient_ids) / len(patient_ids), 4) if patient_ids else 0.0,
+        },
+        "Concept": {
+            "total": len(concept_ids),
+            "labeled": len(covered("Concept") & concept_ids),
+            "ratio": round(len(covered("Concept") & concept_ids) / len(concept_ids), 4) if concept_ids else 0.0,
+        },
+    }
+
+
 def run(ctx: GovernanceContext) -> None:
     require_state(ctx, "clinical_events")
     events = ctx.clinical_events
-    labels = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "dimensions": {
-            "event_type": {
-                "description": TAG_DIMENSIONS["event_type"],
-                "level": "对象类型",
-                "values": _value_counts(events["event_type"]),
-            },
-            "code_system": {
-                "description": TAG_DIMENSIONS["code_system"],
-                "level": "术语体系",
-                "values": _value_counts(events["code_system"]),
-            },
-            "icd_chapter": {
-                "description": TAG_DIMENSIONS["icd_chapter"],
-                "level": "语义章节",
-                "values": _value_counts(events["icd_chapter"], top=10),
-            },
-            "sensitivity": {
-                "description": TAG_DIMENSIONS["sensitivity"],
-                "level": "敏感级别",
-                "values": _value_counts(events["sensitivity"]),
-                "policy": {
-                    "L1": "可公开（数据字典、聚合统计）",
-                    "L2": "受控共享（协议 + 审批）",
-                    "L3": "仅本地（不共享原始行）",
-                },
-            },
-            "split": {
-                "description": TAG_DIMENSIONS["split"],
-                "level": "划分",
-                "values": _value_counts(events["split"]),
-            },
-            "semantic_type": {
-                "description": "UMLS 语义类型（概念层，按 CUI 统计）",
-                "level": "概念语义",
-                "values": _semantic_type_counts(ctx.concept_map),
-                "note": "UMLS 未启用时为空；计数单位是概念，不是患者",
-            },
-        },
-        "note": "标签描述数据语义与敏感级别，不包含任何患者直接标识。",
-    }
+
     version, definitions = load_definitions()
     object_labels = compute_labels(
         ctx.tables,
         notes=note_frame(ctx),
+        events=events,
+        concept_map=getattr(ctx, "concept_map", None),
         manual_path=ctx.settings.manual_labels,
         definitions=definitions,
         version=version,
     )
     ObjectLabelStore(ctx.settings.governance / "labels").write(object_labels)
+
     counts = (
-        {str(k): int(v) for k, v in object_labels.groupby("key").size().items()}
+        {str(k): int(v) for k, v in object_labels.groupby("tag_key").size().items()}
         if not object_labels.empty
         else {}
     )
-    labels["object_labels"] = {
-        "version": version,
-        "definitions": definitions_catalog(definitions),
-        "counts": counts,
-        "manual_entries": int((object_labels["source"] == "manual").sum())
+    layer_counts = (
+        {str(k): int(v) for k, v in object_labels.groupby("layer").size().items()}
         if not object_labels.empty
-        else 0,
-        "note": "标签打在对象上（object_type/object_id），value 为字符串",
+        else {}
+    )
+
+    dictionary = pd.DataFrame(definitions_catalog(definitions))
+    dictionary["count"] = dictionary["tag_key"].map(counts).fillna(0).astype(int)
+    labels_dir = ctx.settings.governance / "labels"
+    labels_dir.mkdir(parents=True, exist_ok=True)
+    dictionary.to_csv(labels_dir / "tag_dictionary.csv", index=False, encoding="utf-8-sig")
+
+    coverage = _coverage(object_labels, events, ctx.tables)
+    labels = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "label_system": {
+            "version": version,
+            "note": "标签 = 打在对象上的 KV；L1 资产 / L2 记录 / L3 概念 / L4 断言",
+            "layers": layer_counts,
+            "tag_keys": counts,
+        },
+        "coverage": coverage,
+        "concept": {
+            "umls_enabled": getattr(ctx, "concept_map", None) is not None,
+            "semantic_type_counts": _semantic_type_counts(getattr(ctx, "concept_map", None)),
+            "note": "UMLS 未启用时 L3.semantic_type 降级为 ICD 章节，不生成 L3.cui",
+        },
+        "field_statistics": {
+            key: {
+                "description": description,
+                "values": _value_counts(
+                    events[key], top=10 if key == "icd_chapter" else None
+                ),
+            }
+            for key, description in FIELD_STATISTICS.items()
+            if key in events
+        },
+        "object_labels": {
+            "version": version,
+            "definitions": definitions_catalog(definitions),
+            "counts": counts,
+            "manual_entries": int((object_labels["source"] == "manual").sum())
+            if not object_labels.empty
+            else 0,
+            "note": "标签打在对象上（object_type/object_id），tag_value 为字符串",
+        },
     }
+
     ctx.object_labels = object_labels
     ctx.stats["object_labels"] = {
         "rows": int(len(object_labels)),
         "keys": counts,
+        "layers": layer_counts,
         "manual": labels["object_labels"]["manual_entries"],
+        "coverage": coverage,
     }
 
     ctx.labels = labels
     (ctx.settings.governance / "metadata" / "labels.json").write_text(
         json.dumps(labels, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    (ctx.settings.governance / "quality" / "label_coverage.json").write_text(
+        json.dumps(coverage, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     ctx.log(
         "标签化",
-        "建立 6 个技术标签维度（对象类型 / 术语体系 / 语义章节 / 敏感级别 / 划分 / 语义类型）"
-        f"覆盖 {len(events)} 条事件；对象级标签 {len(object_labels)} 条"
-        f"（{', '.join(counts) if counts else '无'}）。",
+        f"KV 标签 {len(object_labels)} 条，覆盖 {len(counts)} 个 tag_key；"
+        f"层分布 {layer_counts}；概念覆盖率 {coverage['Concept']['ratio']:.1%}。",
     )

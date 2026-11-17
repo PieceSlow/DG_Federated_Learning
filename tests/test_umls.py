@@ -226,7 +226,8 @@ class PipelineConceptTest(unittest.TestCase):
             labels = json.loads(
                 (settings.governance / "metadata" / "labels.json").read_text(encoding="utf-8")
             )
-            self.assertTrue(labels["dimensions"]["semantic_type"]["values"])
+            self.assertTrue(labels["concept"]["umls_enabled"])
+            self.assertTrue(labels["concept"]["semantic_type_counts"])
 
 
 if __name__ == "__main__":

@@ -36,14 +36,38 @@ RULES = [
 ]
 
 
+def _event_levels(ctx: GovernanceContext) -> dict[str, str]:
+    """从 KV 标签 ``L1.sensitivity`` 读取事件级别；缺标签时回退规则表默认值。"""
+    defaults = {"Diagnosis": "L2", "Procedure": "L2", "Prescription": "L2", "ClinicalNote": "L3"}
+    labels = getattr(ctx, "object_labels", None)
+    if labels is None or labels.empty or ctx.clinical_events is None:
+        return defaults
+    subset = labels[
+        (labels["object_type"] == "Event") & (labels["tag_key"] == "L1.sensitivity")
+    ].copy()
+    if subset.empty:
+        return defaults
+    subset["record_id"] = subset["object_id"].str.replace("^Event:", "", regex=True)
+    merged = ctx.clinical_events[["record_id", "event_type"]].merge(
+        subset[["record_id", "tag_value"]], on="record_id", how="left"
+    )
+    levels: dict[str, str] = {}
+    for event_type, group in merged.groupby("event_type"):
+        values = group["tag_value"].dropna()
+        if not values.empty:
+            levels[str(event_type)] = str(values.mode().iat[0])
+    return {**defaults, **levels}
+
+
 def _result(ctx: GovernanceContext) -> pd.DataFrame:
     events = ctx.clinical_events
+    levels = _event_levels(ctx)
     return pd.DataFrame(
         [
-            ["clinical_events", "Diagnosis", "C03", "L2", int((events.event_type == "Diagnosis").sum())],
-            ["clinical_events", "Procedure", "C05", "L2", int((events.event_type == "Procedure").sum())],
-            ["clinical_events", "Prescription", "C04", "L2", int((events.event_type == "Prescription").sum())],
-            ["clinical_events", "ClinicalNote", "C06", "L3", int((events.event_type == "ClinicalNote").sum())],
+            ["clinical_events", "Diagnosis", "C03", levels["Diagnosis"], int((events.event_type == "Diagnosis").sum())],
+            ["clinical_events", "Procedure", "C05", levels["Procedure"], int((events.event_type == "Procedure").sum())],
+            ["clinical_events", "Prescription", "C04", levels["Prescription"], int((events.event_type == "Prescription").sum())],
+            ["clinical_events", "ClinicalNote", "C06", levels["ClinicalNote"], int((events.event_type == "ClinicalNote").sum())],
             ["source_tables", "Encounter", "C02", "L3", int(len(ctx.tables["admissions"]))],
             ["source_tables", "Demographics", "C01", "L3", int(len(ctx.tables["patients"]))],
             ["patient_360", "PatientSummary", "C07", "L1", int(len(ctx.patient_360))],

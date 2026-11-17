@@ -39,6 +39,7 @@ class GovernanceContext:
     object_labels: pd.DataFrame | None = None
     record_map: pd.DataFrame | None = None
     field_map: pd.DataFrame | None = None
+    field_map_meds: pd.DataFrame | None = None
     object_graph: dict[str, Any] | None = None
     labels: dict[str, Any] | None = None
     catalog: dict[str, Any] | None = None

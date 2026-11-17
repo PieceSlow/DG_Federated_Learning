@@ -68,8 +68,10 @@ class PipelineIntegrationTest(unittest.TestCase):
     def test_mappings_written(self) -> None:
         mapping = self.settings.governance / "mapping"
         field_map = pd.read_csv(mapping / "field_level.csv")
+        meds_map = pd.read_csv(mapping / "field_level_meds.csv")
         record_map = pq.read_table(mapping / "record_level.parquet").to_pandas()
         self.assertGreaterEqual(len(field_map), 30)
+        self.assertEqual(len(meds_map), 45)
         self.assertEqual(len(record_map), 11 + 3)
         self.assertIn("derived:patient_360:", record_map["source_record_id"].iloc[-1])
 
@@ -114,14 +116,17 @@ class PipelineIntegrationTest(unittest.TestCase):
     def test_object_labels(self) -> None:
         frame = pd.read_parquet(self.settings.governance / "labels" / "object_labels.parquet")
         self.assertTrue(
-            {"elderly", "long_stay", "high_followup_priority", "icu_long_stay"}
-            <= set(frame["key"])
+            {"L2.elderly", "L2.long_stay", "L4.high_followup_priority", "L2.icu_long_stay"}
+            <= set(frame["tag_key"])
         )
+        self.assertTrue({"L1.sensitivity", "L2.entity_class"} <= set(frame["tag_key"]))
         labels = json.loads(
             (self.settings.governance / "metadata" / "labels.json").read_text(encoding="utf-8")
         )
-        self.assertEqual(labels["object_labels"]["counts"]["elderly"], 2)
-        self.assertEqual(labels["object_labels"]["counts"]["high_followup_priority"], 1)
+        self.assertEqual(labels["object_labels"]["counts"]["L2.elderly"], 2)
+        self.assertEqual(labels["object_labels"]["counts"]["L4.high_followup_priority"], 1)
+        self.assertIn("L1", labels["label_system"]["layers"])
+        self.assertTrue((self.settings.governance / "labels" / "tag_dictionary.csv").exists())
         # 标签挂的是对象 ID，与图谱节点一致
         self.assertIn("Encounter:12", set(frame["object_id"]))
 
