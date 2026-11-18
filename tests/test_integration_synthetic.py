@@ -95,6 +95,11 @@ class PipelineIntegrationTest(unittest.TestCase):
         self.assertEqual(set(cats), {"resource", "asset", "service", "share", "open"})
         self.assertTrue((self.settings.governance / "catalog" / "data_catalog.md").exists())
 
+    def test_graph_nodes_are_unique(self) -> None:
+        """一行数据必须正好是一个对象；主键少一维时这里会抓到重复。"""
+        nodes = pd.read_parquet(self.settings.governance / "graph" / "nodes.parquet")
+        self.assertEqual(len(nodes), nodes["object_id"].nunique())
+
     def test_graph_instances(self) -> None:
         graph_dir = self.settings.governance / "graph"
         nodes = pd.read_parquet(graph_dir / "nodes.parquet")

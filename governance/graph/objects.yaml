@@ -28,12 +28,14 @@ logical:
     keys: [note_id]
     attributes: [charttime, note_type]
     sensitivity: L3
+  # seq_num 在 MIMIC 里会重复（同一次住院同一序号下有多条诊断码），必须带上编码
   Diagnosis:
-    keys: [subject_id, hadm_id, seq_num]
+    keys: [subject_id, hadm_id, seq_num, icd_code]
     attributes: [icd_code, icd_version]
     sensitivity: L2
+  # 一个 pharmacy_id 下会有多个药品组分，只用 pharmacy_id 会把不同药合成同一个对象
   Prescription:
-    keys: [subject_id, hadm_id, pharmacy_id]
+    keys: [subject_id, hadm_id, pharmacy_id, drug]
     attributes: [starttime, drug, formulary_drug_cd, dose_val_rx]
     sensitivity: L2
   Procedure:

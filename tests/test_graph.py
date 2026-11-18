@@ -322,3 +322,56 @@ class ConceptLayerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DuplicateKeyTest(unittest.TestCase):
+    """主键必须能区分"一行数据"，否则同一个对象会出现多次。"""
+
+    def test_same_pharmacy_id_different_drugs_are_distinct(self) -> None:
+        tables = _tables()
+        tables["prescriptions"] = pd.concat(
+            [
+                tables["prescriptions"],
+                pd.DataFrame({
+                    "subject_id": [1], "hadm_id": [11], "pharmacy_id": [501],
+                    "starttime": ["2100-01-02 10:00:00"], "drug": ["Metoprolol"],
+                    "formulary_drug_cd": ["METOPROLOL"], "dose_val_rx": ["25"],
+                }),
+            ],
+            ignore_index=True,
+        )
+        graph = build_graph(tables, _notes())
+        ids = graph.nodes[graph.nodes.object_type == "Prescription"]["object_id"].tolist()
+        self.assertEqual(len(ids), 2)
+        self.assertEqual(len(set(ids)), 2)
+
+    def test_same_seq_num_different_icd_codes_are_distinct(self) -> None:
+        tables = _tables()
+        tables["diagnoses_icd"] = pd.concat(
+            [
+                tables["diagnoses_icd"],
+                pd.DataFrame({"subject_id": [1], "hadm_id": [11], "seq_num": [1],
+                              "icd_code": ["E119"], "icd_version": [10]}),
+            ],
+            ignore_index=True,
+        )
+        graph = build_graph(tables, _notes())
+        ids = graph.nodes[graph.nodes.object_type == "Diagnosis"]["object_id"].tolist()
+        self.assertEqual(len(ids), 2)
+        self.assertEqual(len(set(ids)), 2)
+
+    def test_verify_flags_duplicate_nodes(self) -> None:
+        graph = build_graph(_tables(), _notes())
+        duplicated = pd.concat([graph.nodes, graph.nodes.iloc[[0]]], ignore_index=True)
+        graph.nodes = duplicated
+        rules = {issue["rule"] for issue in verify(graph)}
+        self.assertIn("GRAPH_DUPLICATE_NODE", rules)
+
+    def test_delta_never_negative_with_duplicate_keys(self) -> None:
+        from governance.graph.store import _compare
+
+        old = pd.DataFrame({"object_id": ["A", "A"], "v": ["1", "1"]})
+        new = pd.DataFrame({"object_id": ["A"], "v": ["1"]})
+        _, delta = _compare(old, new, ["object_id"])
+        self.assertEqual(delta["updated"], 0)
+        self.assertEqual(delta["unchanged"], 1)

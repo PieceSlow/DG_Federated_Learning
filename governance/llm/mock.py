@@ -48,7 +48,8 @@ DEFAULT_RESPONSES: dict[str, Any] = {
             {
                 "name": "Diagnosis",
                 "source_table": "diagnoses_icd",
-                "keys": ["subject_id", "hadm_id", "seq_num"],
+                # seq_num 在 MIMIC 里会重复（同序号多条诊断码），主键必须带上 icd_code
+                "keys": ["subject_id", "hadm_id", "seq_num", "icd_code"],
                 "attributes": ["icd_code", "icd_version"],
                 "sensitivity": "L2",
                 "reason": "住院诊断编码",

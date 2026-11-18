@@ -33,6 +33,10 @@ def _compare(old: pd.DataFrame, new: pd.DataFrame, keys: list[str]) -> tuple[pd.
     if new.empty:
         return old.reset_index(drop=True), {"added": 0, "updated": 0, "unchanged": 0, "removed": 0}
 
+    # 主键重复时 set_index 会让 loc[common] 展开出行数 > len(common)，delta 会算出负的
+    # "updated"；这里先按主键去重（保留最后一条），差量才有意义。
+    old = old.drop_duplicates(keys, keep="last")
+    new = new.drop_duplicates(keys, keep="last")
     old_idx = old.set_index(keys)
     new_idx = new.set_index(keys)
     added = len(new_idx.index.difference(old_idx.index))

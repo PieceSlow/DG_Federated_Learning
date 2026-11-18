@@ -4,6 +4,7 @@
 
 | 规则 | 级别 | 含义 |
 |---|---|---|
+| ``GRAPH_DUPLICATE_NODE`` | error | 同一 object_id 出现多次（主键没覆盖到区分维度） |
 | ``GRAPH_DANGLING_EDGE`` | error | 边的端点不在节点集合中（外键指向了不存在的对象） |
 | ``GRAPH_ORPHAN_NODE`` | warning | 主体对象（患者/住院/ICU）没有任何边 |
 | ``GRAPH_MISSING_RELATION`` | warning | 事件对象（诊断/处方/操作/文书）没有挂到住院上 |
@@ -62,6 +63,16 @@ def verify(graph: GraphData) -> list[dict[str, Any]]:
     nodes = graph.nodes
     node_ids = set(nodes["object_id"])
     endpoints: set[str] = set()
+
+    # 0) 主键重复：一行数据应该正好是一个对象；重复说明 keys 少了一维
+    duplicated = nodes[nodes["object_id"].duplicated(keep=False)]
+    for object_id, group in duplicated.groupby("object_id"):
+        add(
+            "GRAPH_DUPLICATE_NODE",
+            "error",
+            f"{group['object_type'].iat[0]} 主键重复 {len(group)} 次（keys 缺少区分维度）: {object_id}",
+            object_id,
+        )
 
     # 1) 悬挂边
     for relation, frame in graph.edges.items():
