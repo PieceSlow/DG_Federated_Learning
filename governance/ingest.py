@@ -63,6 +63,30 @@ def _filter_subjects(frame: pd.DataFrame, subjects: set[int]) -> pd.DataFrame:
     return frame[frame["subject_id"].isin(subjects)].copy()
 
 
+#: 各源表的时间列；接入时统一成 datetime，避免"口径靠下游各自解析"
+TIME_COLUMNS = {
+    "patients": ("dod",),
+    "admissions": ("admittime", "dischtime", "deathtime", "edregtime", "edouttime"),
+    "icustays": ("intime", "outtime"),
+    "procedures_icd": ("chartdate",),
+    "prescriptions": ("starttime", "stoptime"),
+    "labevents": ("charttime", "storetime"),
+}
+
+
+def coerce_times(name: str, frame: pd.DataFrame) -> pd.DataFrame:
+    """把时间列统一成 datetime（就地修改）。
+
+    字段对齐的类型匹配依赖 dtype：若 ``procedures_icd.chartdate`` 是字符串、
+    而目标 ``event_time`` 是 datetime，类型匹配器会判为不兼容，正确的字段映射
+    反而被类型约束挡掉。源表统一 dtype，匹配结果才可信。
+    """
+    for column in TIME_COLUMNS.get(name, ()):
+        if column in frame.columns:
+            frame[column] = pd.to_datetime(frame[column], errors="coerce")
+    return frame
+
+
 def run(ctx: GovernanceContext) -> None:
     settings = ctx.settings
     mimic_root = settings.mimic_root
@@ -131,6 +155,9 @@ def run(ctx: GovernanceContext) -> None:
         "d_icd_diagnoses": pd.read_csv(resolve_data_file(mimic_root, "hosp", "d_icd_diagnoses")),
         "d_icd_procedures": pd.read_csv(resolve_data_file(mimic_root, "hosp", "d_icd_procedures")),
     }
+    for name in TIME_COLUMNS:
+        if name in tables:
+            coerce_times(name, tables[name])
 
     ctx.tables = tables
     ctx.cohort = subjects

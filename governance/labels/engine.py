@@ -8,12 +8,18 @@
 * ``rule``：pandas ``DataFrame.eval`` 计算的布尔断言（如多重用药）；
 * ``constant``：定义即结论（如数据集共享边界）。
 
+**标签建在图谱之上**：传入 ``graph``（``graph.build.GraphData``）时，
+住院级的处方/诊断/操作条目数按边表计数、共病负担按"患者→住院→诊断"两跳的
+章节去重计数、概念对象以图谱 Concept 节点为准；同时保留表/事件口径作为基线，
+两者不一致时产出 ``LABEL_GRAPH_MISMATCH`` 告警，避免口径悄悄漂移。
+
 规则文件在仓库内、受版本控制，不接受外部输入；UMLS 概念标签由
 ``concept_map`` 提供，缺失时 L3 语义类型降级为 ICD 章节。
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +27,9 @@ from typing import Any
 
 import pandas as pd
 import yaml
+
+from governance.concept_key import concept_object_id
+from governance.icd import icd_chapter
 
 DEFINITIONS_PATH = Path(__file__).resolve().parent / "definitions.yaml"
 
@@ -145,6 +154,114 @@ def _eval_rule(frame: pd.DataFrame, definition: LabelDefinition) -> pd.Series:
     return result
 
 
+# ---------------------------------------------------------------- 图谱取数
+
+
+def _graph_edges(graph: Any) -> dict[str, pd.DataFrame]:
+    """取出图谱的边表字典；无图谱或结构不符时返回空字典。"""
+    if graph is None:
+        return {}
+    edges = getattr(graph, "edges", None)
+    return edges if isinstance(edges, dict) else {}
+
+
+def _graph_nodes(graph: Any) -> pd.DataFrame | None:
+    if graph is None:
+        return None
+    nodes = getattr(graph, "nodes", None)
+    if not isinstance(nodes, pd.DataFrame) or nodes.empty:
+        return None
+    return nodes
+
+
+def _edge_counts(graph: Any, relation: str) -> pd.Series | None:
+    """按边的起点（``src_id``）计数；关系不存在时返回 None，调用方回退到表口径。
+
+    关系**存在但为空**时返回空 Series —— 那是"图谱口径为 0"的有效信号，
+    与"根本没有这张边表"必须区分开，否则对账永远发现不了图谱缺边。
+    """
+    frame = _graph_edges(graph).get(relation)
+    if frame is None or "src_id" not in frame.columns:
+        return None
+    return frame.groupby("src_id").size()
+
+
+def _chapters_by_subject(graph: Any) -> pd.Series | None:
+    """两跳取共病章节：Patient ←has_encounter→ Encounter ←has_diagnosis→ Diagnosis。
+
+    章节由 Diagnosis 节点的 ``icd_code``/``icd_version`` 现算，与
+    ``clinical_events.icd_chapter`` 使用同一个 :func:`governance.icd.icd_chapter`。
+    """
+    nodes = _graph_nodes(graph)
+    edges = _graph_edges(graph)
+    if nodes is None:
+        return None
+    encounter_diagnosis = edges.get("has_diagnosis")
+    patient_encounter = edges.get("has_encounter")
+    if encounter_diagnosis is None or patient_encounter is None:
+        return None
+
+    diagnosis = nodes[nodes["object_type"] == "Diagnosis"]
+    if diagnosis.empty:
+        return None
+
+    chapters: dict[str, str] = {}
+    for row in diagnosis.itertuples():
+        try:
+            attributes = json.loads(row.attributes or "{}")
+        except json.JSONDecodeError:
+            continue
+        code, version = attributes.get("icd_code"), attributes.get("icd_version")
+        if not code or version in (None, ""):
+            continue
+        chapters[row.object_id] = icd_chapter(int(float(version)), code)
+    if not chapters:
+        return None
+
+    subject_of_encounter = dict(
+        zip(patient_encounter["dst_id"], patient_encounter["src_id"])
+    )
+    per_subject: dict[str, set[str]] = {}
+    for row in encounter_diagnosis.itertuples():
+        subject_id = subject_of_encounter.get(row.src_id)
+        chapter = chapters.get(row.dst_id)
+        if subject_id is None or chapter is None:
+            continue
+        per_subject.setdefault(subject_id, set()).add(chapter)
+    # 边表为空也要返回空 Series：那是"图谱口径=0"的有效信号，不能当成"没有图谱"
+    return pd.Series(
+        {key: len(value) for key, value in per_subject.items()}, dtype="float64"
+    )
+
+
+def _note_mismatch(
+    issues: list[dict[str, Any]] | None,
+    metric: str,
+    baseline: pd.Series,
+    graph_value: pd.Series,
+) -> None:
+    """图谱口径与表口径不一致时记一条告警；只报条数，不报患者标识。"""
+    if issues is None:
+        return
+    left = pd.Series(baseline).astype("int64").reset_index(drop=True)
+    right = pd.Series(graph_value).astype("int64").reset_index(drop=True)
+    if len(left) != len(right):
+        differing = max(len(left), len(right))
+    else:
+        differing = int((left != right).sum())
+    if differing:
+        issues.append(
+            {
+                "rule": "LABEL_GRAPH_MISMATCH",
+                "severity": "warning",
+                "detail": (
+                    f"{metric}：图谱口径与表口径在 {differing} 行不一致，已采用图谱口径；"
+                    "说明图谱与事件流的过滤条件不同，需确认口径"
+                ),
+            }
+        )
+
+
 # ---------------------------------------------------------------- 对象视图
 
 
@@ -176,11 +293,14 @@ def _patient_frame(
     tables: dict[str, pd.DataFrame],
     events: pd.DataFrame | None,
     notes: pd.DataFrame | None,
+    graph: Any = None,
+    issues: list[dict[str, Any]] | None = None,
 ) -> pd.DataFrame:
     patients = tables["patients"].copy()
     if "subject_id" not in patients:
         return pd.DataFrame(columns=["object_id"])
     patients["subject_id"] = patients["subject_id"].astype("int64")
+    patients["object_id"] = "Patient:" + patients["subject_id"].astype(str)
 
     if "anchor_age" in patients:
         patients["anchor_age"] = pd.to_numeric(patients["anchor_age"], errors="coerce")
@@ -209,6 +329,7 @@ def _patient_frame(
     patients["total_los_days"] = patients["total_los_days"].fillna(0.0).astype(float)
     patients["mortality"] = patients["mortality"].fillna(0).astype(int)
 
+    baseline_burden: pd.Series | None = None
     if events is not None and not events.empty and "subject_id" in events:
         prescriptions = events[events["event_type"] == "Prescription"]
         drugs = (
@@ -220,9 +341,21 @@ def _patient_frame(
         diagnoses = events[(events["event_type"] == "Diagnosis") & events["icd_chapter"].notna()]
         chapters = diagnoses.groupby("subject_id")["icd_chapter"].nunique()
         patients["comorbidity_burden"] = patients["subject_id"].map(chapters).fillna(0).astype(int)
+        baseline_burden = patients["comorbidity_burden"]
     else:
         patients["n_distinct_drugs"] = 0
         patients["comorbidity_burden"] = 0
+
+    # 共病负担优先按图谱两跳取数（患者→住院→诊断），表口径作为基线用于对账
+    graph_chapters = _chapters_by_subject(graph)
+    if graph_chapters is not None:
+        from_graph = patients["object_id"].map(graph_chapters).fillna(0).astype(int)
+        if baseline_burden is not None:
+            _note_mismatch(issues, "L4.comorbidity_burden", baseline_burden, from_graph)
+        patients["comorbidity_burden"] = from_graph
+        patients["comorbidity_source"] = "graph:has_diagnosis"
+    else:
+        patients["comorbidity_source"] = "events:icd_chapter"
 
     if notes is not None and not notes.empty and "subject_id" in notes:
         counts = notes.dropna(subset=["subject_id"]).groupby("subject_id").size()
@@ -234,7 +367,6 @@ def _patient_frame(
         patients["n_distinct_drugs"] / patients["total_los_days"].clip(lower=0.1)
     ).round(4)
     patients["sensitivity"] = "L3"
-    patients["object_id"] = "Patient:" + patients["subject_id"].astype(str)
     return patients
 
 
@@ -242,6 +374,8 @@ def _encounter_frame(
     tables: dict[str, pd.DataFrame],
     notes: pd.DataFrame | None,
     patient_flags: pd.DataFrame,
+    graph: Any = None,
+    issues: list[dict[str, Any]] | None = None,
 ) -> pd.DataFrame:
     encounters = tables["admissions"].copy()
     encounters["admittime"] = pd.to_datetime(encounters["admittime"], errors="coerce")
@@ -249,18 +383,28 @@ def _encounter_frame(
     encounters["los_days"] = (
         encounters["dischtime"] - encounters["admittime"]
     ).dt.total_seconds() / 86400
+    encounters["object_id"] = "Encounter:" + encounters["hadm_id"].astype(str)
 
-    for table_name, column, feature in (
-        ("prescriptions", "hadm_id", "n_prescriptions"),
-        ("diagnoses_icd", "hadm_id", "n_diagnoses"),
-        ("procedures_icd", "hadm_id", "n_procedures"),
+    for table_name, relation, feature in (
+        ("prescriptions", "has_prescription", "n_prescriptions"),
+        ("diagnoses_icd", "has_diagnosis", "n_diagnoses"),
+        ("procedures_icd", "has_procedure", "n_procedures"),
     ):
         frame = tables.get(table_name)
-        if frame is not None:
-            counts = frame.groupby(column).size()
-            encounters[feature] = encounters["hadm_id"].map(counts).fillna(0).astype(int)
+        baseline = (
+            encounters["hadm_id"].map(frame.groupby("hadm_id").size()).fillna(0).astype(int)
+            if frame is not None
+            else None
+        )
+        # 优先按图谱边表计数（每条边就是一个"该住院下有该事件"的事实）
+        counts = _edge_counts(graph, relation)
+        if counts is None:
+            encounters[feature] = baseline if baseline is not None else 0
         else:
-            encounters[feature] = 0
+            from_graph = encounters["object_id"].map(counts).fillna(0).astype(int)
+            if baseline is not None:
+                _note_mismatch(issues, feature, baseline, from_graph)
+            encounters[feature] = from_graph
 
     if notes is not None and not notes.empty:
         counts = notes.dropna(subset=["hadm_id"]).groupby("hadm_id").size()
@@ -270,7 +414,6 @@ def _encounter_frame(
 
     if not patient_flags.empty:
         encounters = encounters.merge(patient_flags, on="subject_id", how="left")
-    encounters["object_id"] = "Encounter:" + encounters["hadm_id"].astype(str)
     return encounters
 
 
@@ -305,7 +448,42 @@ def _event_frame(events: pd.DataFrame) -> pd.DataFrame:
     return frame
 
 
-def _concept_frame(events: pd.DataFrame, concept_map: pd.DataFrame | None) -> pd.DataFrame:
+def _merge_concept_rows(concepts: pd.DataFrame) -> pd.DataFrame:
+    """同一概念（同一 CUI）下的多个编码合并成一行对象。
+
+    合并后 ``code_system`` 变成多值（``ICD9|ICD10``），因为一个 UMLS 概念本来就可能
+    由多套术语的多个编码表达；``semantic_type`` 取第一个非 ``Unknown`` 的值。
+    """
+    concepts = concepts.copy()
+    concepts["semantic_type"] = concepts["semantic_type"].fillna("Unknown")
+
+    def _join_systems(values: pd.Series) -> str:
+        return "|".join(sorted({str(value) for value in values if pd.notna(value)}))
+
+    def _first_known(values: pd.Series) -> str:
+        for value in values:
+            text = str(value)
+            if text and text != "Unknown" and text != "nan":
+                return text
+        return "Unknown"
+
+    def _first_cui(values: pd.Series) -> str | None:
+        for value in values:
+            if pd.notna(value):
+                return str(value)
+        return None
+
+    return concepts.groupby("object_id", as_index=False, sort=True).agg(
+        code_system=("code_system", _join_systems),
+        semantic_type=("semantic_type", _first_known),
+        cui=("cui", _first_cui),
+    )
+
+
+def _concept_frame(
+    events: pd.DataFrame,
+    concept_map: pd.DataFrame | None,
+) -> pd.DataFrame:
     concepts = events[["code_system", "code", "icd_chapter"]].dropna(
         subset=["code_system", "code"]
     ).drop_duplicates()
@@ -327,9 +505,14 @@ def _concept_frame(events: pd.DataFrame, concept_map: pd.DataFrame | None) -> pd
     if "cui" not in concepts:
         concepts["cui"] = None
 
-    concepts["object_id"] = (
-        "Concept:" + concepts["code_system"].astype(str) + ":" + concepts["code"].astype(str)
-    )
+    # 主键与图谱 Concept 节点用同一个函数：有 CUI 用 CUI，否则用 编码体系:编码
+    concepts = concepts[concepts["code"].astype(str).str.strip() != ""]
+    concepts["object_id"] = [
+        concept_object_id(system, code, cui)
+        for system, code, cui in zip(concepts["code_system"], concepts["code"], concepts["cui"])
+    ]
+    if concepts["object_id"].duplicated().any():
+        concepts = _merge_concept_rows(concepts)
     return concepts.drop_duplicates("object_id")
 
 
@@ -433,8 +616,14 @@ def compute_labels(
     manual_path: Path | str | None = None,
     definitions: list[LabelDefinition] | None = None,
     version: str | None = None,
+    graph: Any = None,
+    issues: list[dict[str, Any]] | None = None,
 ) -> pd.DataFrame:
-    """计算对象标签；manual_path 提供的手动标签会覆盖同名断言。"""
+    """计算对象标签；manual_path 提供的手动标签会覆盖同名断言。
+
+    ``graph``（``graph.build.GraphData``）非空时，住院级条目数与共病负担按图谱取数，
+    并把与表口径的差异写进 ``issues``（``LABEL_GRAPH_MISMATCH``）。
+    """
     if definitions is None or version is None:
         loaded_version, loaded = load_definitions()
         definitions = definitions or loaded
@@ -444,7 +633,7 @@ def compute_labels(
     dataset = _dataset_frame(events)
     dataset_rows = _collect(dataset, definitions, "Dataset", version, now)
 
-    patients = _patient_frame(tables, events, notes)
+    patients = _patient_frame(tables, events, notes, graph=graph, issues=issues)
     patient_rows = _collect(patients, definitions, "Patient", version, now)
     patient_flag_cols = [
         f"label_{_safe(d.key)}"
@@ -455,7 +644,7 @@ def compute_labels(
         columns={column: f"patient_{column[len('label_'):]}" for column in patient_flag_cols}
     )
 
-    encounters = _encounter_frame(tables, notes, patient_flags)
+    encounters = _encounter_frame(tables, notes, patient_flags, graph=graph, issues=issues)
     encounter_rows = _collect(encounters, definitions, "Encounter", version, now)
     encounter_flag_cols = [
         f"label_{_safe(d.key)}"

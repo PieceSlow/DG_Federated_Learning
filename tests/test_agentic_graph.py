@@ -75,7 +75,10 @@ class AgenticObjectifyTest(unittest.TestCase):
             manifest = json.loads(
                 (ctx.settings.governance / "graph" / "graph_manifest.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(set(manifest["objects"]), {"Patient", "Encounter", "Diagnosis"})
+            self.assertEqual(
+                set(manifest["objects"]),
+                {"Patient", "Encounter", "Diagnosis", "Concept"},
+            )
             self.assertEqual(manifest["relations"]["has_encounter"], 1)
             self.assertEqual(manifest["relations"]["has_diagnosis"], 1)
             self.assertTrue(ctx.stats["graph_agents"]["used"])
@@ -98,7 +101,7 @@ class AgenticObjectifyTest(unittest.TestCase):
             manifest = json.loads(
                 (ctx.settings.governance / "graph" / "graph_manifest.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(len(manifest["objects"]), 7)
+            self.assertEqual(len(manifest["objects"]), 8)
             self.assertNotIn("graph_agents", ctx.stats)
 
 
@@ -115,7 +118,10 @@ class PipelineWithAgentsTest(unittest.TestCase):
             manifest = json.loads(
                 (settings.governance / "graph" / "graph_manifest.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(set(manifest["objects"]), {"Patient", "Encounter", "Diagnosis"})
+            self.assertEqual(
+                set(manifest["objects"]),
+                {"Patient", "Encounter", "Diagnosis", "Concept"},
+            )
             self.assertTrue(ctx.stats["graph_agents"]["used"])
             self.assertTrue((settings.audit_dir / "agent_trace.jsonl").exists())
 

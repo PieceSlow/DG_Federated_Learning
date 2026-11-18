@@ -14,12 +14,12 @@
 from __future__ import annotations
 
 import json
-import re
 from collections import Counter
 from datetime import datetime, timezone
 
 import pandas as pd
 
+from governance.concept_key import concept_object_id
 from governance.context import GovernanceContext, require_state
 from governance.labels import (
     ObjectLabelStore,
@@ -37,49 +37,6 @@ SENSITIVITY = {
     "ClinicalNote": "L3",
 }
 
-ICD10_CHAPTERS = [
-    ("A00-B99", "Certain infectious and parasitic diseases", "AB"),
-    ("C00-D49", "Neoplasms", "CD"),
-    ("E00-E89", "Endocrine, nutritional and metabolic diseases", "E"),
-    ("F01-F99", "Mental, behavioural and neurodevelopmental disorders", "F"),
-    ("G00-G99", "Diseases of the nervous system", "G"),
-    ("H00-H59", "Diseases of the eye and adnexa", "H0"),
-    ("H60-H95", "Diseases of the ear and mastoid process", "H6"),
-    ("I00-I99", "Diseases of the circulatory system", "I"),
-    ("J00-J99", "Diseases of the respiratory system", "J"),
-    ("K00-K95", "Diseases of the digestive system", "K"),
-    ("L00-L99", "Diseases of the skin and subcutaneous tissue", "L"),
-    ("M00-M99", "Diseases of the musculoskeletal system", "M"),
-    ("N00-N99", "Diseases of the genitourinary system", "N"),
-    ("O00-O9A", "Pregnancy, childbirth and the puerperium", "O"),
-    ("P00-P96", "Certain conditions originating in the perinatal period", "P"),
-    ("Q00-Q99", "Congenital malformations and chromosomal abnormalities", "Q"),
-    ("R00-R99", "Symptoms, signs and abnormal findings", "R"),
-    ("S00-T88", "Injury, poisoning and external causes", "ST"),
-    ("V00-Y99", "External causes of morbidity", "VY"),
-    ("Z00-Z99", "Factors influencing health status", "Z"),
-]
-
-ICD9_CHAPTERS = [
-    (1, 139, "Infectious and parasitic diseases"),
-    (140, 239, "Neoplasms"),
-    (240, 279, "Endocrine and metabolic diseases"),
-    (280, 289, "Diseases of the blood"),
-    (290, 319, "Mental disorders"),
-    (320, 389, "Diseases of the nervous system"),
-    (390, 459, "Diseases of the circulatory system"),
-    (460, 519, "Diseases of the respiratory system"),
-    (520, 579, "Diseases of the digestive system"),
-    (580, 629, "Diseases of the genitourinary system"),
-    (630, 679, "Pregnancy and childbirth"),
-    (680, 709, "Diseases of the skin"),
-    (710, 739, "Diseases of the musculoskeletal system"),
-    (740, 759, "Congenital anomalies"),
-    (760, 779, "Perinatal conditions"),
-    (780, 799, "Symptoms and signs"),
-    (800, 999, "Injury and poisoning"),
-]
-
 #: 字段统计维度：这些是列/元数据，不是 KV 标签。
 FIELD_STATISTICS = {
     "event_type": "对象类型：诊疗事件属于哪一类对象",
@@ -88,36 +45,6 @@ FIELD_STATISTICS = {
     "sensitivity": "敏感级别：L1 公开 / L2 受控共享 / L3 仅本地",
     "split": "患者级划分：train / tuning / held_out，防止联邦训练泄漏",
 }
-
-
-def icd_chapter(version: int, code: str) -> str:
-    """把 ICD 编码映射到章节标签；无法归类时给明确兜底值而不是空串。"""
-    code = str(code).strip().upper()
-    if not code:
-        return "Unknown"
-    if version == 10:
-        letter = code[0]
-        three = code[:3]
-        if letter in "AB":
-            return ICD10_CHAPTERS[0][1]
-        if letter in "CD":
-            return ICD10_CHAPTERS[1][1]
-        if three.startswith("H0") or (letter == "H" and len(code) > 1 and code[1].isdigit() and int(code[1]) <= 5):
-            return ICD10_CHAPTERS[5][1]
-        if letter == "H":
-            return ICD10_CHAPTERS[6][1]
-        for _, label, letters in ICD10_CHAPTERS[2:]:
-            if letter == letters[0]:
-                return label
-        return "Other / unclassified"
-    digits = re.match(r"(\d{1,3})", code)
-    if not digits:
-        return "Unknown"
-    number = int(digits.group(1))
-    for low, high, label in ICD9_CHAPTERS:
-        if low <= number <= high:
-            return label
-    return "Other / unclassified"
 
 
 def sensitivity_for(event_type: str) -> str:
@@ -149,17 +76,42 @@ def _value_counts(series: pd.Series, top: int | None = None) -> dict[str, int]:
     return {str(k): int(v) for k, v in counts.items()}
 
 
-def _coverage(object_labels: pd.DataFrame, events: pd.DataFrame, tables: dict[str, pd.DataFrame]) -> dict[str, dict]:
+def _concept_ids(events: pd.DataFrame, concept_map: pd.DataFrame | None) -> set[str]:
+    """概念对象主键：与图谱 Concept 节点用同一个函数生成。"""
+    if events is None or events.empty:
+        return set()
+    pairs = events[["code_system", "code"]].dropna().drop_duplicates()
+    pairs = pairs[pairs["code"].astype(str).str.strip() != ""]
+    cui_by_code: dict[tuple[str, str], str] = {}
+    if concept_map is not None and not concept_map.empty:
+        for row in concept_map.itertuples():
+            cui_by_code[(str(row.source_system), str(row.source_code))] = str(row.cui)
+    return {
+        concept_object_id(system, code, cui_by_code.get((str(system), str(code))))
+        for system, code in pairs.itertuples(index=False)
+    }
+
+
+def _coverage(
+    object_labels: pd.DataFrame,
+    events: pd.DataFrame,
+    tables: dict[str, pd.DataFrame],
+    concept_map: pd.DataFrame | None = None,
+    graph=None,
+) -> dict[str, dict]:
     def covered(object_type: str) -> set[str]:
         subset = object_labels[object_labels["object_type"] == object_type]
         return set(subset["object_id"])
 
     event_ids = {"Event:" + str(value) for value in events["record_id"]}
     patient_ids = {"Patient:" + str(value) for value in tables["patients"]["subject_id"]}
-    concept_ids = {
-        f"Concept:{system}:{code}"
-        for system, code in events[["code_system", "code"]].dropna().drop_duplicates().itertuples(index=False)
-    }
+    concept_ids = _concept_ids(events, concept_map)
+
+    graph_concepts: set[str] = set()
+    nodes = getattr(graph, "nodes", None) if graph is not None else None
+    if isinstance(nodes, pd.DataFrame) and not nodes.empty and "object_type" in nodes:
+        graph_concepts = set(nodes.loc[nodes["object_type"] == "Concept", "object_id"])
+
     return {
         "Event": {
             "total": len(event_ids),
@@ -175,15 +127,18 @@ def _coverage(object_labels: pd.DataFrame, events: pd.DataFrame, tables: dict[st
             "total": len(concept_ids),
             "labeled": len(covered("Concept") & concept_ids),
             "ratio": round(len(covered("Concept") & concept_ids) / len(concept_ids), 4) if concept_ids else 0.0,
+            "graph_nodes": len(graph_concepts),
+            "graph_matched": len(concept_ids & graph_concepts),
         },
     }
 
 
 def run(ctx: GovernanceContext) -> None:
-    require_state(ctx, "clinical_events")
+    require_state(ctx, "clinical_events", "graph")
     events = ctx.clinical_events
 
     version, definitions = load_definitions()
+    graph_issues: list[dict] = []
     object_labels = compute_labels(
         ctx.tables,
         notes=note_frame(ctx),
@@ -192,7 +147,18 @@ def run(ctx: GovernanceContext) -> None:
         manual_path=ctx.settings.manual_labels,
         definitions=definitions,
         version=version,
+        graph=ctx.graph,
+        issues=graph_issues,
     )
+    for issue in graph_issues:
+        ctx.add_issue(
+            issue["rule"],
+            issue["severity"],
+            "labels",
+            issue["detail"],
+            subject=None,
+            record=None,
+        )
     ObjectLabelStore(ctx.settings.governance / "labels").write(object_labels)
 
     counts = (
@@ -212,7 +178,10 @@ def run(ctx: GovernanceContext) -> None:
     labels_dir.mkdir(parents=True, exist_ok=True)
     dictionary.to_csv(labels_dir / "tag_dictionary.csv", index=False, encoding="utf-8-sig")
 
-    coverage = _coverage(object_labels, events, ctx.tables)
+    coverage = _coverage(
+        object_labels, events, ctx.tables,
+        concept_map=getattr(ctx, "concept_map", None), graph=ctx.graph,
+    )
     labels = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "label_system": {
@@ -225,7 +194,12 @@ def run(ctx: GovernanceContext) -> None:
         "concept": {
             "umls_enabled": getattr(ctx, "concept_map", None) is not None,
             "semantic_type_counts": _semantic_type_counts(getattr(ctx, "concept_map", None)),
-            "note": "UMLS 未启用时 L3.semantic_type 降级为 ICD 章节，不生成 L3.cui",
+            "graph_nodes": coverage["Concept"]["graph_nodes"],
+            "graph_matched": coverage["Concept"]["graph_matched"],
+            "note": (
+                "概念对象主键由 concept_key.concept_object_id 生成，与图谱 Concept 节点一致；"
+                "有 UMLS 用 CUI，无 UMLS 用 编码体系:编码 降级"
+            ),
         },
         "field_statistics": {
             key: {

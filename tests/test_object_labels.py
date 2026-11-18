@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from governance.graph.build import build_concept_layer, build_graph
 from governance.labels import (
     ObjectLabelStore,
     compute_labels,
@@ -133,6 +134,55 @@ class StoreTest(unittest.TestCase):
             path = store.write(frame)
             self.assertTrue(path.exists())
             self.assertEqual(len(store.read()), len(frame))
+
+
+class LabelOnGraphTest(unittest.TestCase):
+    """标签必须建在图谱之上：住院级计数读边表，与表口径不一致时要告警。"""
+
+    def _graph(self, tables, notes):
+        return build_concept_layer(build_graph(tables, notes=notes), None)
+
+    def test_encounter_counts_come_from_edges(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tables, notes = _fixture(Path(tmp))
+            graph = self._graph(tables, notes)
+            # 人为把 Encounter:11 的处方边补到 5 条：只有读边表才会触发该标签
+            edge = graph.edges["has_prescription"]
+            boost = pd.concat([edge[edge["src_id"] == "Encounter:11"]] * 4)
+            graph.edges["has_prescription"] = pd.concat([edge, boost], ignore_index=True)
+
+            with_graph = compute_labels(tables, notes=notes, graph=graph)
+            tagged = set(with_graph.loc[
+                with_graph["tag_key"] == "L4.polypharmacy_encounter", "object_id"
+            ])
+            self.assertIn("Encounter:11", tagged)
+
+            without = compute_labels(tables, notes=notes)
+            untagged = set(without.loc[
+                without["tag_key"] == "L4.polypharmacy_encounter", "object_id"
+            ])
+            self.assertNotIn("Encounter:11", untagged)
+
+    def test_consistent_graph_reports_no_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tables, notes = _fixture(Path(tmp))
+            issues: list[dict] = []
+            compute_labels(tables, notes=notes, graph=self._graph(tables, notes), issues=issues)
+            self.assertEqual(
+                [issue for issue in issues if issue["rule"] == "LABEL_GRAPH_MISMATCH"], []
+            )
+
+    def test_mismatch_between_graph_and_table_is_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tables, notes = _fixture(Path(tmp))
+            graph = self._graph(tables, notes)
+            # 抽掉全部诊断边：图谱口径 0，表口径非 0
+            graph.edges["has_diagnosis"] = graph.edges["has_diagnosis"].iloc[0:0]
+            issues: list[dict] = []
+            labels = compute_labels(tables, notes=notes, graph=graph, issues=issues)
+            self.assertIn("LABEL_GRAPH_MISMATCH", {issue["rule"] for issue in issues})
+            burden = labels[labels["tag_key"] == "L4.comorbidity_burden"]
+            self.assertEqual(burden["tag_value"].astype(int).max(), 0)
 
 
 if __name__ == "__main__":

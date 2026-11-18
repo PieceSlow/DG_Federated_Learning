@@ -16,8 +16,16 @@
 
 > **2026-11-18 字段对齐重构**：删除 33 条静态映射。目标字段来自
 > `governance/alignment/target_schema.yaml`；候选由 name/type/structure/value 四个
-> 匹配器生成，top-k 选择后输出 `field_level.csv`（auto/review）。
+> 匹配器生成，**每个「目标字段 × 源表」**保留 top-k，`source_fields` 是声明契约
+> （声明过的字段不被阈值否掉），输出 `field_level.csv`（auto/review + method）。
 > 派生/聚合字段单独放 `derived_fields.csv`；`field_level_meds.csv` 仍是 MEDS 接口交叉表。
+>
+> **SQL 由映射生成**：`build_clinical_events.sql` 的每个字段表达式来自 `field_level.csv`，
+> `sql_execution_report.json.mapping_usage` 给出 mapping/transform/spec/derived/missing 计数。
+>
+> **标签建在图谱之上**：`label` 阶段依赖 `graph`，住院级计数读边表、共病走两跳、
+> 概念对象主键与图谱 Concept 节点统一（`concept_key.concept_object_id`），
+> 口径不一致产出 `LABEL_GRAPH_MISMATCH`。
 
 ---
 
@@ -30,10 +38,10 @@
 | 03 | 质量校验 | 编码/关联/时间/重复校验 + MEDS 核心 schema | `quality/issues.csv` |
 | 04 | 事件仓储 | 按 MEDS 目录落盘，写盘后重新读回再校验 | `eventstore/` |
 | 05 | 多源汇聚 | 统一事件表 + 患者 360 资源视图 | `dataset/*.parquet` |
-| 06 | 字段对齐 | schema matching：目标 schema + 四个匹配器 + top-k + 约束；无静态映射表 | `mapping/field_level.csv`、`derived_fields.csv`、`field_level_meds.csv` |
+| 06 | 字段对齐 | schema matching：目标 schema + 四个匹配器 + 每个「目标字段 × 源表」top-k；**用映射生成组织汇聚 SQL 并对账** | `mapping/field_level.csv`、`build_clinical_events.sql`、`derived_fields.csv`、`field_level_meds.csv` |
 | 07 | 概念归一 | UMLS 编码/药名/检验名 → 概念（CUI）与语义类型 | `concept_map.parquet`、`concept_coverage.json` |
 | 08 | 对象化 | 智能体提案对象/关系 → 本地实例化（可回退确定性模型）+ 图谱自检 | `graph/nodes.parquet`、`graph/edges/*`、`object_graph.json` |
-| 09 | 标签化 | KV 对象标签 L1–L4 + 标签字典 + 覆盖率 | `labels/object_labels.parquet`、`labels/tag_dictionary.csv`、`labels.json` |
+| 09 | 标签化 | KV 对象标签 L1–L4，**读图谱算**（边表计数、两跳共病、概念节点） | `labels/object_labels.parquet`、`labels/tag_dictionary.csv`、`labels.json` |
 | 10 | 分类分级 | 7 条分级规则 + 落地结果 | `classification/*.csv` |
 | 11 | 编目 | 资源/资产/服务/共享/开放五级目录 | `data_catalog.json/.md` |
 | 12 | 报告 | 事件流与治理后数据集的质量汇总 | `quality/*.json`、`run_summary.json` |
@@ -194,7 +202,7 @@ output/
 | 边当表存 | 每种关系一张 parquet：可直接 join/查询、可加属性、可增量，不必部署图数据库 |
 | 概念层用 UMLS | 跨中心对齐需要统一概念；UMLS 只在本地缓存，不联网、不外发 |
 
-## 七、参考运行结果（100 人真实队列）
+## 七、参考运行结果（100 人真实队列，2026-11-18 复跑）
 
 | 指标 | 数值 |
 |---|---|
@@ -202,9 +210,18 @@ output/
 | MEDS 事件 | 147,640 条、3,558 个编码 |
 | 统一事件表 | 24,554 行（处方 18,384 / 诊断 5,319 / 操作 696 / 文书 155） |
 | 患者 360 | 100 行 |
-| 记录级 / 字段级映射 | 24,654 条 / 8 个目标字段（匹配结果 + review） |
-| 质量告警 | 158 条（119 时间越界、22 重复、17 缺药品编码），error 0 |
-| 运行时间 | 约 3 分钟（读 9s、映射 90s、写盘 48s、治理阶段约 25s） |
+| 记录级映射 | 24,654 条（24,554 事件 + 100 患者） |
+| 字段级映射 | 38 条（31 matcher / 7 declared；22 auto / 16 review），覆盖 8 个目标字段 |
+| 组织汇聚 SQL | 内存 SQLite 执行 24,554 行，与事件表逐类型一致（`status=ok`） |
+| SQL 字段来源 | mapping 19 / transform 1 / spec 2 / derived 32 / missing 10 |
+| 对象图谱 | 8 类对象、9 类关系；Concept 2,890 个（无 UMLS，编码级降级） |
+| KV 标签 | 86,873 条、16 个 tag_key；概念对象 2,890/2,890 命中图谱节点 |
+| 质量告警 | 441 条，error 0；详见 [docs/03](docs/03-质量校验与事件仓储.md) |
+| 运行时间 | 130 秒（读取 10s、标准化 17s、写盘 38s、对齐 46s、治理阶段约 19s） |
+
+> 告警从旧文档的 158 条增至 441 条，原因是**文本一致性与图谱一致性规则已经生效**：
+> 158（时间越界 119 + 重复 22 + 缺编码 17）+ 文本用药不一致 246（明细按规则上限 200 记）
+> + 文书缺章节 19 + 文本与 ICD 不一致 17 + 图谱时间冲突 1。
 
 ## 八、测试
 

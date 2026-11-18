@@ -7,7 +7,9 @@
 3. 字符串 / 类型 / 结构 / 值域四个匹配器出分，加权组合；
 4. 每个目标字段保留 top-k 候选（允许 1:N），按类型与分数给出 auto/review；
 5. 输出 ``field_level.csv``、``derived_fields.csv``、``field_level_meds.csv``，
-   覆盖率与待复核项进 ``alignment_report.json``。
+   覆盖率与待复核项进 ``alignment_report.json``；
+6. **用映射结果生成 ``build_clinical_events.sql``**，并在内存 SQLite 里对账行数与类型分布
+   —— 这一步是"对齐结果的下游消费者"，否则字段映射只是一张没人用的表。
 
 没有 gold：评价的是覆盖率与复核量，不是"与某张人工表的一致率"。
 """
@@ -33,7 +35,7 @@ from governance.alignment.agentic import align_with_agents
 from governance.alignment.crosswalk import build_meds_crosswalk, validate_crosswalk
 from governance.alignment.evaluate import coverage
 from governance.alignment.schema import family_of
-from governance.alignment.sql import build_sql, validate_sql
+from governance.alignment.sql import build_sql_with_usage, validate_sql
 from governance.context import GovernanceContext, require_state
 from governance.text_notes import note_text_frame
 
@@ -53,6 +55,7 @@ FIELD_COLUMNS = [
     "structure_score",
     "value_score",
     "rank",
+    "table_rank",
     "method",
     "status",
     "evidence",
@@ -134,13 +137,22 @@ def run(ctx: GovernanceContext) -> None:
             .rank(ascending=False, method="first")
             .astype(int)
         )
-    selected = select_mappings(candidates, threshold=0.5, top_k=3)
+        candidates["table_rank"] = (
+            candidates.groupby(["target_table", "target_field", "source_table"])["score"]
+            .rank(ascending=False, method="first")
+            .astype(int)
+        )
+    selected = select_mappings(
+        candidates, threshold=0.5, top_k=3, declared=allowed_fields
+    )
 
     spec = {(target.table, target.field): target for target in targets}
     rows: list[dict] = []
     if not selected.empty:
         detail = candidates.merge(
-            selected[["target_table", "target_field", "source_table", "source_field"]],
+            selected[
+                ["target_table", "target_field", "source_table", "source_field", "method"]
+            ],
             on=["target_table", "target_field", "source_table", "source_field"],
             how="inner",
         )
@@ -148,7 +160,7 @@ def run(ctx: GovernanceContext) -> None:
             target = spec[(row.target_table, row.target_field)]
             status = _status(
                 float(row.score),
-                int(row.rank),
+                int(row.table_rank),
                 str(row.source_dtype),
                 str(row.target_dtype),
                 bool(target.required),
@@ -168,7 +180,8 @@ def run(ctx: GovernanceContext) -> None:
                     "structure_score": float(row.structure_score),
                     "value_score": float(row.value_score),
                     "rank": int(row.rank),
-                    "method": "matcher",
+                    "table_rank": int(row.table_rank),
+                    "method": str(row.method),
                     "status": status,
                     "evidence": (
                         f"string={row.string_score:.2f};type={row.type_score:.2f};"
@@ -222,13 +235,14 @@ def run(ctx: GovernanceContext) -> None:
         )
 
     try:
-        sql = build_sql()
+        sql, sql_usage = build_sql_with_usage(field_map)
         (dest / "build_clinical_events.sql").write_text(sql, encoding="utf-8")
         expected = {
             str(key): int(value)
             for key, value in ctx.clinical_events["event_type"].value_counts().items()
         }
         sql_report = validate_sql(sql, ctx.tables, note_text_frame(ctx), expected)
+        sql_report["mapping_usage"] = sql_usage
     except Exception as exc:  # noqa: BLE001 - 生成失败进报告，不中断流水线
         sql_report = {"status": "error", "error": str(exc)}
     (ctx.settings.governance / "quality" / "sql_execution_report.json").write_text(

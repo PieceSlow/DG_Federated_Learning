@@ -23,6 +23,7 @@ from governance.alignment.target_schema import (
     load_object_targets,
     target_views,
 )
+from governance.ingest import coerce_times
 from tests.synthetic import write_synthetic_mimic
 
 
@@ -119,6 +120,49 @@ class SelectTest(unittest.TestCase):
     def test_candidates_have_ranks(self) -> None:
         candidates = build_candidates([_field("a", "int64")], [_field("a", "int64", "tgt")])
         self.assertEqual(candidates["rank"].tolist(), [1])
+
+    def test_selection_is_per_target_and_source_table(self) -> None:
+        """``subject_id`` 在每张源表都要留一条，否则下游按事件类型取字段会缺。"""
+        sources = [
+            _field("subject_id", "int64", "patients"),
+            _field("subject_id", "int64", "diagnoses_icd"),
+            _field("subject_id", "int64", "prescriptions"),
+        ]
+        targets = [_field("subject_id", "int64", "clinical_events")]
+        selected = select_mappings(build_candidates(sources, targets), top_k=3)
+        self.assertEqual(
+            set(selected["source_table"]),
+            {"patients", "diagnoses_icd", "prescriptions"},
+        )
+
+    def test_declared_field_survives_low_score(self) -> None:
+        """目标 schema 声明过的字段是契约，不能因为字面不相似就被阈值否掉。"""
+        sources = [_field("formulary_drug_cd", "object", "prescriptions")]
+        targets = [_field("code", "object", "clinical_events")]
+        declared = {("clinical_events", "code"): {"formulary_drug_cd"}}
+        selected = select_mappings(
+            build_candidates(sources, targets, allowed_tables={
+                ("clinical_events", "code"): {"prescriptions"}
+            }),
+            threshold=0.5,
+            declared=declared,
+        )
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected["method"].tolist(), ["declared"])
+
+
+class SourceDtypeTest(unittest.TestCase):
+    def test_time_columns_are_normalised(self) -> None:
+        """源表时间列必须是 datetime，否则类型匹配器会把正确字段判为不兼容。"""
+        frame = pd.DataFrame({"chartdate": ["2100-01-02"], "icd_code": ["X"]})
+        coerce_times("procedures_icd", frame)
+        self.assertEqual(str(frame["chartdate"].dtype)[:8], "datetime")
+        self.assertEqual(str(frame["icd_code"].dtype), "str")
+
+    def test_unknown_table_is_untouched(self) -> None:
+        frame = pd.DataFrame({"charttime": ["2100-01-02"]})
+        coerce_times("not_a_table", frame)
+        self.assertEqual(str(frame["charttime"].dtype), "str")
 
 
 class CoverageTest(unittest.TestCase):

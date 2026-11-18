@@ -19,7 +19,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from governance.context import GovernanceContext
-from governance.label import icd_chapter, sensitivity_for
+from governance.icd import icd_chapter
+from governance.label import sensitivity_for
 from governance.meds import subject_split
 
 

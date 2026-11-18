@@ -1,9 +1,12 @@
 # START HERE · 交接说明
 
-> 2026-11-18 ｜ 交接时以 `git log -1` 为准 ｜ 测试：175 个通过
+> 2026-11-18 ｜ 交接时以 `git log -1` 为准 ｜ 测试：197 个通过
 >
 > 字段对齐已改为 **schema matching**：目标 schema + name/type/structure/value 四个匹配器
-> + top-k + 约束；**33 条静态映射表已删除**。
+> + 每个「目标字段 × 源表」top-k + 声明契约；**33 条静态映射表已删除**。
+>
+> 两条链路已打通：**字段映射 → 组织汇聚 SQL**（不再硬编码）、
+> **对象图谱 → 标签**（不再各算一套）。
 
 ## 0. 先读什么
 
@@ -84,15 +87,25 @@ governance/
 已实现：
 
 1. `target_schema.yaml` 定义 8 个由源字段直接提供的目标字段（subject_id、hadm_id、
-   stay_id、event_time、code、display、numeric_value、text_value），并限定允许的源表；
-2. 四个匹配器出分 → 加权组合 → 每个目标保留 top-3、阈值 0.5、类型过滤；
-3. `field_level.csv` 输出 `auto` / `review`，`derived_fields.csv` 单独记录
-   record_id/event_type/patient_360 聚合等**不参与匹配**的字段；
-4. 覆盖率报告：目标覆盖、必填覆盖、auto/review 数量、缺失必填项；
-5. 没有 33 条 gold，也不再计算 precision/recall。
+   stay_id、event_time、code、display、numeric_value、text_value），并限定允许的源表与
+   可接受的源字段；
+2. 四个匹配器出分 → 加权组合 → **每个「目标字段 × 源表」**保留 top-3（否则
+   `diagnoses_icd.subject_id` 会被挤出候选）；`source_fields` 声明的字段直接准入；
+3. `field_level.csv` 输出 `auto` / `review` 与 `method=matcher/declared`，
+   `derived_fields.csv` 单独记录 record_id/event_type/patient_360 聚合等不参与匹配的字段；
+4. **`build_clinical_events.sql` 由映射生成**，`mapping_usage` 给出每个字段的来源
+   （mapping/transform/spec/derived/missing）；
+5. 覆盖率报告：目标覆盖、必填覆盖、auto/review 数量、缺失必填项；
+6. 没有 33 条 gold，也不再计算 precision/recall。
+
+## 4.1 标签现状
+
+`label` 依赖 `clinical_events` + `graph`：住院级计数读边表、`L4.comorbidity_burden`
+走两跳、Concept 主键与图谱节点统一（`concept_key.concept_object_id`）；
+不一致产出 `LABEL_GRAPH_MISMATCH`。无 UMLS 时图谱建编码级降级概念节点。
 
 可选增强（不阻塞交付）：语义匹配器（LLM，只发字段元数据）、1:1 约束的匈牙利算法、
-人工复核界面。
+人工复核界面、跨源实体识别。
 
 ## 5. 不要做
 
@@ -117,6 +130,6 @@ governance/
 - [x] KV 对象标签 + 标签字典 + 覆盖率
 - [x] MEDS 9×5 交叉表
 - [x] `.env` / 20 元预算
-- [x] 175 测试通过
+- [x] 197 测试通过
 - [ ] 小批量真实数据端到端（API ≤20 元）
 - [ ] 100 人全量运行（需数据盘）

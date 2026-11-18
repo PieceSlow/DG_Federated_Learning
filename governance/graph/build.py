@@ -17,7 +17,9 @@ from typing import Any, Mapping
 
 import pandas as pd
 
+from governance.concept_key import concept_object_id
 from governance.graph.model import ObjectModel, ObjectSpec, RelationSpec, load_model
+from governance.icd import icd_chapter
 
 NODE_COLUMNS = ["object_type", "object_id", "attributes", "source_table"]
 
@@ -127,22 +129,63 @@ def _concept_key(object_type: str, attributes: dict[str, Any]) -> tuple[str, str
     return None
 
 
-def build_concept_layer(graph: GraphData, concept_map: pd.DataFrame | None) -> GraphData:
+def _event_code_key(object_type: str, attributes: dict[str, Any]) -> tuple[str, str] | None:
+    """事件层的编码键，与 ``assemble`` 生成 ``code_system``/``code`` 的规则一致。
+
+    UMLS 的 ``_concept_key`` 用的是源词表 SAB（``ICD10PCS``/``RXNORM``），
+    和 ``clinical_events.code_system``（``ICD10``/``MIMIC_FORMULARY``）不是一回事；
+    没有 UMLS 时概念层必须按事件口径降级，否则又会造出第三套主键。
+    """
+    if object_type in {"Diagnosis", "Procedure"}:
+        version, code = attributes.get("icd_version"), attributes.get("icd_code")
+        if version in (None, "") or not code:
+            return None
+        return f"ICD{int(float(version))}", str(code)
+    if object_type == "Prescription":
+        code = attributes.get("formulary_drug_cd")
+        return ("MIMIC_FORMULARY", str(code).strip()) if code not in (None, "") else None
+    return None
+
+
+def _code_semantic_type(object_type: str, attributes: dict[str, Any]) -> str:
+    """无 UMLS 时的语义类型：诊断/操作降级为 ICD 章节，其余与事件 ``icd_chapter`` 兜底一致。"""
+    if object_type in {"Diagnosis", "Procedure"}:
+        version, code = attributes.get("icd_version"), attributes.get("icd_code")
+        if version not in (None, "") and code:
+            return icd_chapter(int(float(version)), code)
+        return "Unknown"
+    return "N/A"
+
+
+def build_concept_layer(
+    graph: GraphData,
+    concept_map: pd.DataFrame | None,
+) -> GraphData:
     """在已有图谱上追加 Concept 节点与三类概念边。
 
-    ``concept_map`` 来自概念归一阶段；为空时原样返回（不改变原有 7 类对象）。
+    两种模式，都由**图谱里已有的事件节点**推导，保证"有边必有节点、有节点必可达"：
+
+    * **UMLS 模式**（``concept_map`` 非空）：概念节点按 CUI 合并，键为 ``Concept:{cui}``，
+      只收已归一的编码；
+    * **降级模式**（无 UMLS）：概念节点按事件编码建立，键为 ``Concept:{编码体系}:{编码}``，
+      语义类型降级为 ICD 章节。没有这一层，图谱就没有概念对象，而标签却会打出
+      L3 概念标签，两边对不上。
+
+    概念节点主键统一由 :func:`governance.concept_key.concept_object_id` 生成，
+    **与标签阶段的 Concept 对象使用同一个函数**。
     """
-    if concept_map is None or concept_map.empty:
-        return graph
+    umls = concept_map is not None and not concept_map.empty
     index: dict[tuple[str, str], tuple[str, str, str, float, str]] = {}
-    for row in concept_map.itertuples():
-        index[(str(row.source_system), str(row.source_code))] = (
-            str(row.cui), str(row.concept_name), str(row.sty),
-            float(row.confidence), str(row.method),
-        )
+    if umls:
+        for row in concept_map.itertuples():
+            index[(str(row.source_system), str(row.source_code))] = (
+                str(row.cui), str(row.concept_name), str(row.sty),
+                float(row.confidence), str(row.method),
+            )
 
     records: dict[str, list[dict[str, Any]]] = {name: [] for name in CONCEPT_RELATIONS.values()}
-    concept_meta: dict[str, tuple[str, str]] = {}
+    concept_meta: dict[str, dict[str, Any]] = {}
+
     for node in graph.nodes.itertuples():
         relation = CONCEPT_RELATIONS.get(node.object_type)
         if relation is None:
@@ -151,22 +194,39 @@ def build_concept_layer(graph: GraphData, concept_map: pd.DataFrame | None) -> G
             attributes = json.loads(node.attributes or "{}")
         except json.JSONDecodeError:
             continue
-        key = _concept_key(node.object_type, attributes)
-        if key is None:
-            continue
-        hit = index.get(key)
-        if hit is None:
-            continue
-        cui, name, sty, confidence, method = hit
-        concept_meta[cui] = (name, sty)
+
+        if umls:
+            key = _concept_key(node.object_type, attributes)
+            if key is None:
+                continue
+            hit = index.get(key)
+            if hit is None:
+                continue
+            cui, name, sty, confidence, method = hit
+            evidence = f"concept_map:{key[0]}:{key[1]}:{method}"
+        else:
+            key = _event_code_key(node.object_type, attributes)
+            if key is None:
+                continue
+            cui, name = None, None
+            sty = _code_semantic_type(node.object_type, attributes)
+            confidence, method = 1.0, "code_key"
+            evidence = f"code_key:{key[0]}:{key[1]}"
+
+        object_id = concept_object_id(key[0], key[1], cui)
+        meta = concept_meta.setdefault(
+            object_id,
+            {"cui": cui, "name": name, "sty": sty, "codes": set()},
+        )
+        meta["codes"].add(f"{key[0]}//{key[1]}")
         records[relation].append(
             {
                 "src_type": node.object_type,
                 "src_id": node.object_id,
                 "dst_type": "Concept",
-                "dst_id": f"Concept:{cui}",
+                "dst_id": object_id,
                 "relation": relation,
-                "evidence": f"concept_map:{key[0]}:{key[1]}:{method}",
+                "evidence": evidence,
                 "confidence": confidence,
             }
         )
@@ -178,11 +238,19 @@ def build_concept_layer(graph: GraphData, concept_map: pd.DataFrame | None) -> G
         [
             {
                 "object_type": "Concept",
-                "object_id": f"Concept:{cui}",
-                "attributes": json.dumps({"name": name, "sty": sty}, ensure_ascii=False),
-                "source_table": "concept_map",
+                "object_id": object_id,
+                "attributes": json.dumps(
+                    {
+                        "cui": meta["cui"],
+                        "name": meta["name"],
+                        "sty": meta["sty"],
+                        "codes": sorted(meta["codes"]),
+                    },
+                    ensure_ascii=False,
+                ),
+                "source_table": "concept_map" if umls else "clinical_events",
             }
-            for cui, (name, sty) in sorted(concept_meta.items())
+            for object_id, meta in sorted(concept_meta.items())
         ],
         columns=NODE_COLUMNS,
     )
@@ -193,13 +261,19 @@ def build_concept_layer(graph: GraphData, concept_map: pd.DataFrame | None) -> G
     graph.manifest["objects"]["Concept"] = int(len(concept_meta))
     specs = graph.manifest.setdefault("specs", {})
     specs["Concept"] = {
-        "keys": ["cui"],
-        "attributes": ["name", "sty"],
-        "source_table": "concept_map",
+        "keys": ["cui"] if umls else ["code_system", "code"],
+        "attributes": ["name", "sty", "codes"],
+        "source_table": "concept_map" if umls else "clinical_events",
         "sensitivity": "L1",
-        "concept": "UMLS 概念（跨中心语义对齐锚点）",
+        "concept": (
+            "UMLS 概念（跨中心语义对齐锚点）"
+            if umls
+            else "编码级概念（无 UMLS 时的降级节点，语义类型取 ICD 章节）"
+        ),
     }
-    graph.manifest["note"] = graph.manifest.get("note", "") + " Concept 为 UMLS 派生对象。"
+    graph.manifest["note"] = graph.manifest.get("note", "") + (
+        " Concept 为 UMLS 派生对象。" if umls else " Concept 为编码级降级节点（无 UMLS）。"
+    )
     return graph
 
 
