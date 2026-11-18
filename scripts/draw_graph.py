@@ -59,6 +59,143 @@ def load_graph(graph_dir: Path) -> tuple[pd.DataFrame, dict[str, pd.DataFrame], 
     return nodes, edges, manifest
 
 
+def _box_height(lines: int) -> float:
+    """类框高度：标题 + 每行属性 + 来源脚注。"""
+    return 0.52 + 0.24 * lines + 0.40
+
+
+def draw_class_model(manifest: dict, nodes: pd.DataFrame, out_dir: Path,
+                     dpi: int = 180) -> Path:
+    """UML 风格类图：对象类型 = 类，字段 = 属性，关系 = 带基数的关联线。"""
+    from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
+
+    specs = manifest.get("specs", {})
+    counts = {str(k): int(v) for k, v in nodes.groupby("object_type").size().items()}
+    event_types = [name for name in ("ICUStay", "Diagnosis", "Prescription",
+                                     "Procedure", "ClinicalNote") if name in specs]
+    event_xs = [1.9 + 3.35 * index for index in range(len(event_types))]
+    positions = {"Patient": (8.6, 11.7), "Encounter": (8.6, 9.0)}
+    for x, name in zip(event_xs, event_types):
+        positions[name] = (x, 5.3)
+    if "Concept" in specs:
+        positions["Concept"] = (8.6, 1.6)
+
+    widths = {name: 3.2 for name in positions}
+    heights = {}
+    for name in positions:
+        spec = specs[name]
+        lines = len(spec.get("keys", [])) + len(spec.get("attributes", []))
+        heights[name] = 0.60 + 0.24 * lines + 0.34
+
+    figure, axis = plt.subplots(figsize=(17.5, 12.5))
+    axis.set_xlim(0, 17.4)
+    axis.set_ylim(0, 13.2)
+    axis.axis("off")
+
+    def top(name: str) -> float:
+        return positions[name][1] + heights[name] / 2
+
+    def bottom(name: str) -> float:
+        return positions[name][1] - heights[name] / 2
+
+    for name in positions:
+        x, y = positions[name]
+        width, height = widths[name], heights[name]
+        spec = specs[name]
+        color = TYPE_COLORS.get(name, "#999999")
+        axis.add_patch(FancyBboxPatch(
+            (x - width / 2, y - height / 2), width, height,
+            boxstyle="round,pad=0.02,rounding_size=0.08",
+            linewidth=1.4, edgecolor="#444444", facecolor="white", zorder=3))
+        axis.add_patch(FancyBboxPatch(
+            (x - width / 2, y + height / 2 - 0.46), width, 0.46,
+            boxstyle="round,pad=0.02,rounding_size=0.08",
+            linewidth=0, facecolor=color, alpha=0.30, zorder=4))
+        axis.text(x - width / 2 + 0.14, y + height / 2 - 0.23, name,
+                  fontsize=10.5, fontweight="bold", va="center", zorder=5)
+        axis.text(x + width / 2 - 0.14, y + height / 2 - 0.23,
+                  str(spec.get("sensitivity", "")), fontsize=8.5, va="center",
+                  ha="right", zorder=5)
+        axis.plot([x - width / 2, x + width / 2], [y + height / 2 - 0.46] * 2,
+                  color="#666666", linewidth=0.9, zorder=4)
+
+        line_y = y + height / 2 - 0.46 - 0.18
+        for key in spec.get("keys", []):
+            axis.text(x - width / 2 + 0.14, line_y, f"+ {key}", fontsize=8.2,
+                      va="center", zorder=5, family="DejaVu Sans")
+            line_y -= 0.24
+        if spec.get("keys") and spec.get("attributes"):
+            axis.plot([x - width / 2, x + width / 2], [line_y + 0.06] * 2,
+                      color="#dddddd", linewidth=0.8, linestyle="--", zorder=4)
+        for attribute in spec.get("attributes", []):
+            axis.text(x - width / 2 + 0.14, line_y, f"- {attribute}", fontsize=8.2,
+                      va="center", color="#333333", zorder=5, family="DejaVu Sans")
+            line_y -= 0.24
+        footer = f"source: {spec.get('source_table', '?')} · {counts.get(name, 0):,}"
+        axis.text(x - width / 2 + 0.14, y - height / 2 + 0.15, footer, fontsize=6.8,
+                  color="#666666", va="center", style="italic", zorder=5,
+                  family="DejaVu Sans")
+
+    # 事件层虚线框
+    if event_types:
+        left = min(event_xs) - widths[event_types[0]] / 2 - 0.2
+        right = max(event_xs) + widths[event_types[-1]] / 2 + 0.2
+        tops = max(top(name) for name in event_types) + 0.2
+        bottoms = min(bottom(name) for name in event_types) - 0.2
+        axis.add_patch(FancyBboxPatch(
+            (left, bottoms), right - left, tops - bottoms,
+            boxstyle="round,pad=0.02,rounding_size=0.12", linewidth=1.0,
+            edgecolor="#999999", facecolor="none", linestyle="--", zorder=1))
+        axis.text(left + 0.1, tops + 0.03, "event layer", fontsize=8, color="#777777",
+                  va="bottom", style="italic")
+
+    def arrow(x1: float, y1: float, x2: float, y2: float) -> None:
+        axis.add_patch(FancyArrowPatch((x1, y1), (x2, y2), arrowstyle="-|>",
+                                       mutation_scale=12, linewidth=1.2,
+                                       color="#555555", zorder=2))
+
+    # Patient → Encounter
+    arrow(8.6, bottom("Patient"), 8.6, top("Encounter"))
+    axis.text(8.78, (bottom("Patient") + top("Encounter")) / 2, "has_encounter  1:N",
+              fontsize=7.5, color="#333333", ha="left", va="center",
+              bbox={"boxstyle": "round,pad=0.12", "fc": "white", "ec": "none", "alpha": 0.85})
+
+    # Encounter → 事件：一条水平总线 + 5 根竖直箭头，标签写在总线上方
+    bus_y = 7.45
+    axis.plot([8.6, 8.6], [bottom("Encounter"), bus_y], color="#555555", linewidth=1.2, zorder=2)
+    axis.plot([min(event_xs), max(event_xs)], [bus_y, bus_y], color="#555555",
+              linewidth=1.2, zorder=2)
+    for x, name in zip(event_xs, event_types):
+        arrow(x, bus_y, x, top(name))
+        axis.text(x + 0.06, bus_y + 0.06, f"has_{name.lower()}  1:N", fontsize=6.8,
+                  color="#333333", ha="left", va="bottom", zorder=6,
+                  bbox={"boxstyle": "round,pad=0.10", "fc": "white", "ec": "none", "alpha": 0.9})
+
+    # 事件 → Concept：三根直箭头，标签放在来源框下方
+    if "Concept" in specs:
+        concept_x, concept_top = positions["Concept"][0], top("Concept")
+        for name, relation in (("Diagnosis", "diagnosis_concept"),
+                               ("Prescription", "prescription_concept"),
+                               ("Procedure", "procedure_concept")):
+            if name not in specs:
+                continue
+            x = positions[name][0]
+            arrow(x, bottom(name), concept_x, concept_top)
+            axis.text(x + 0.08, bottom(name) - 0.14, f"{relation}  N:1", fontsize=6.8,
+                      color="#333333", ha="left", va="top", zorder=6,
+                      bbox={"boxstyle": "round,pad=0.10", "fc": "white", "ec": "none", "alpha": 0.9})
+
+    axis.set_title(
+        "Object model — UML class diagram: 8 classes, 9 associations\n"
+        "+ key field   - attribute   (sensitivity tag in title bar; instance count in footer)",
+        fontsize=13, pad=10)
+    figure.tight_layout()
+    out_path = out_dir / "graph_classes.png"
+    figure.savefig(out_path, dpi=dpi, bbox_inches="tight", facecolor="white")
+    plt.close(figure)
+    return out_path
+
+
 def _schema_positions(types: list[str]) -> dict[str, tuple[float, float]]:
     """固定布局：Patient → Encounter → 事件类型 → Concept，像一张"骨架示意图"。"""
     import math
@@ -302,6 +439,8 @@ def main(argv: list[str] | None = None) -> int:
     nodes, edges, manifest = load_graph(graph_dir)
     schema_path = draw_schema(nodes, edges, manifest, out_dir, dpi=args.dpi)
     print(f"类型级 schema 图: {schema_path}")
+    class_path = draw_class_model(manifest, nodes, out_dir, dpi=args.dpi)
+    print(f"UML 类图: {class_path}")
 
     patient = args.patient or _choose_patient(edges)
     if patient:

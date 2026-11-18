@@ -312,6 +312,8 @@ M1 包含：
 python scripts/draw_graph.py --graph-dir output/governance/graph --out-dir output/graphs
 ```
 
+- `graph_classes.png`：**UML 类图**（类 = 对象类型，字段 = 主键/属性，关联线标 1:N / N:1），
+  适合放进「对象模型」页；
 - `graph_schema.png` / `.dot`：类型级 schema（对象类型 + 关系 + 实例数），**不含患者信息**，
   可以直接放进汇报；
 - `graph_Patient_<id>.png`：单个患者的实例图（Patient → Encounter → 事件 → 概念 CUI），
