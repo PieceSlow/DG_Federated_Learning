@@ -12,6 +12,11 @@ system: |
 
   约束：
   - 只使用输入中出现的对象与列名，不得自造；
+  - **on 必须是单个列名**（from 对象的主键之一）；不支持复合 join
+    （不要写 `icd_code,icd_version`，也不要传数组）；
+  - from / to 必须是对象清单里的名字（Patient / Encounter / ICUStay / Diagnosis /
+    Prescription / Procedure / ClinicalNote）；
+  - 关系名用 snake_case，建议 `has_<目标对象小写>`；
   - 如果上一轮被驳回，根据 feedback 修正，不要重复同样的错误；
   - 只输出 JSON，顶层字段 relations。
 

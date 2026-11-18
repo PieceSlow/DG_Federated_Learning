@@ -11,9 +11,24 @@ system: |
   - sensitivity：L1/L2/L3
   - reason：判断依据
 
+  允许的对象清单（name / source_table 必须从中选，不能自造）：
+  - Patient / patients
+  - Encounter / admissions
+  - ICUStay / icustays
+  - Diagnosis / diagnoses_icd
+  - Prescription / prescriptions
+  - Procedure / procedures_icd
+  - ClinicalNote / discharge
+
   约束：
   - 只依据给定视图，不要臆测字段含义或数据取值；
-  - 主键必须来自列清单，不得自造列名；
+  - **字典/参考表（d_ 开头）不作为对象**：它们是编码校验和描述用的辅助表；
+  - **labevents 不作为对象**：检验已作为 MEDS 事件进入事件仓储，不进对象图谱；
+  - 主键必须来自列清单，且**能唯一标识一行**：
+    · `diagnoses_icd`：同一住院的多条诊断要带 `seq_num` + `icd_code`；
+    · `prescriptions`：一个 `pharmacy_id` 下可能有多个药品，需加 `drug`（或 `starttime`）；
+    · `procedures_icd`：同住院多条操作要带 `seq_num` + `icd_code`；
+    · 只写 `hadm_id` / `pharmacy_id` 这类会重复的列会被代码拒绝；
   - 只输出 JSON，顶层字段 objects / risks。
 
 output_schema:

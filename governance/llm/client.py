@@ -38,6 +38,9 @@ class LLMConfig:
     api_key: str | None = None
     temperature: float = 0.0
     max_tokens: int = 4000  # 8 类对象 + 关系的 JSON 约 1.5k~2.5k tokens，1200 会被截断
+    # 思考模型（如 deepseek-flash）会把 max_tokens 花在推理上，超长 prompt 容易返回空内容；
+    # 结构化 JSON 抽取优先用非思考模型，失败时自动降级到它。
+    fallback_model: str = "deepseek-chat"
     timeout_s: float = 60.0
 
     def validate(self) -> None:
@@ -58,6 +61,7 @@ def config_from_env(provider: str | None = None, model: str | None = None) -> LL
         api_key=os.environ.get("DEEPSEEK_API_KEY"),
         temperature=float(os.environ.get("LLM_TEMPERATURE", "0")),
         max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "4000")),
+        fallback_model=os.environ.get("LLM_FALLBACK_MODEL", "deepseek-chat"),
         timeout_s=float(os.environ.get("LLM_TIMEOUT_S", "60")),
     )
 
@@ -138,35 +142,57 @@ class ApiProvider:
             "Authorization": f"Bearer {config.api_key}",
             "Content-Type": "application/json",
         }
+        def call(model: str) -> LLMResponse:
+            payload = dict(body, model=model)
+            response = requests.post(url, headers=headers, json=payload, timeout=config.timeout_s)
+            response.raise_for_status()
+            data = response.json()
+            choice = data["choices"][0]
+            text = choice["message"].get("content") or ""
+            finish_reason = str(choice.get("finish_reason", ""))
+            usage = data.get("usage", {})
+            if not text:
+                raise _EmptyContent(finish_reason, int(usage.get("completion_tokens", 0)))
+            return LLMResponse(
+                text=text,
+                parsed=_parse_json(text),
+                prompt_tokens=int(usage.get("prompt_tokens", 0)),
+                completion_tokens=int(usage.get("completion_tokens", 0)),
+                model=model,
+                finish_reason=finish_reason,
+            )
+
         last_error: Exception | None = None
         for _ in range(2):  # 一次重试，覆盖偶发网络/5xx
             try:
-                response = requests.post(url, headers=headers, json=body, timeout=config.timeout_s)
-                response.raise_for_status()
-                data = response.json()
-                choice = data["choices"][0]
-                text = choice["message"].get("content") or ""
-                finish_reason = str(choice.get("finish_reason", ""))
-                usage = data.get("usage", {})
-                if not text:
-                    raise LLMError(
+                return call(config.model)
+            except _EmptyContent as exc:
+                # 思考模型把 max_tokens 花在推理上 → 降级到非思考模型再试一次
+                if (
+                    exc.finish_reason == "length"
+                    and config.fallback_model
+                    and config.fallback_model != config.model
+                ):
+                    try:
+                        return call(config.fallback_model)
+                    except Exception as fallback_exc:  # noqa: BLE001
+                        last_error = fallback_exc
+                else:
+                    last_error = LLMError(
                         "LLM 返回空内容"
-                        f"（finish_reason={finish_reason}，"
-                        f"completion_tokens={usage.get('completion_tokens')}）；"
-                        "finish_reason=length 说明 max_tokens 太小，可用 LLM_MAX_TOKENS 调大"
+                        f"（finish_reason={exc.finish_reason}，completion_tokens={exc.completion_tokens}）；"
+                        "finish_reason=length 说明 max_tokens 太小或模型在推理上耗尽了额度"
                     )
-                parsed = _parse_json(text)
-                return LLMResponse(
-                    text=text,
-                    parsed=parsed,
-                    prompt_tokens=int(usage.get("prompt_tokens", 0)),
-                    completion_tokens=int(usage.get("completion_tokens", 0)),
-                    model=config.model,
-                    finish_reason=finish_reason,
-                )
             except Exception as exc:  # noqa: BLE001 - 统一转换为 LLMError
                 last_error = exc
         raise LLMError(f"LLM 调用失败：{last_error}")
+
+
+class _EmptyContent(Exception):
+    def __init__(self, finish_reason: str, completion_tokens: int) -> None:
+        self.finish_reason = finish_reason
+        self.completion_tokens = completion_tokens
+        super().__init__(f"empty content (finish_reason={finish_reason})")
 
 
 def _parse_json(text: str) -> dict[str, Any] | None:

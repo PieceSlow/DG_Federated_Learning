@@ -51,6 +51,11 @@ def validate_proposals(
         if name in specs:
             errors.append(f"对象重名: {name}")
             continue
+        frame = sources[table]
+        if len(frame) <= 500_000:  # 大表跳过，避免校验拖慢流水线
+            if frame.duplicated(subset=keys).any():
+                errors.append(f"{name}: 主键不唯一（{', '.join(keys)}），不能区分行")
+                continue
         specs[name] = {"table": table, "keys": keys}
 
     for relation in relations:

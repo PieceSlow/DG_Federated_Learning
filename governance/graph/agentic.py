@@ -41,15 +41,19 @@ def build_with_agents(
 
     try:
         finder = ObjectFinderAgent(llm=ctx.llm, trace_writer=writer)
+
+        def object_validator(result) -> bool:
+            # 表存在、主键在列里、主键唯一——不通过则带 feedback 让模型重试
+            return not validate_proposals(
+                result.artifacts["objects"], [], ctx.tables, notes
+            )
+
         found = Supervisor(max_attempts=2).run(
-            finder, {"schema_view": schema, "stats_view": stats}
+            finder, {"schema_view": schema, "stats_view": stats}, validator=object_validator
         )
         if not found.ok or found.result is None:
             return None, ["对象识别未通过校验"]
         objects = found.result.artifacts["objects"]
-        errors = validate_proposals(objects, [], ctx.tables, notes)
-        if errors:
-            return None, errors
 
         extractor = RelationExtractorAgent(llm=ctx.llm, trace_writer=writer)
 

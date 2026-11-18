@@ -67,9 +67,13 @@ def _node_frame(object_name: str, spec: ObjectSpec, rows: pd.DataFrame) -> pd.Da
         object_id = make_object_id(object_name, [row.get(key) for key in spec.keys])
         if object_id is None:
             continue  # 主键缺失的行不建节点；由质量规则暴露
+        # 主键也是对象属性：智能体常把编码放在 keys 里，若不合并，概念层就取不到 icd_code
+        attribute_names = list(spec.attributes) + [
+            key for key in spec.keys if key not in spec.attributes
+        ]
         attributes = {
             name: _clean(row.get(name))
-            for name in spec.attributes
+            for name in attribute_names
             if name in rows.columns
         }
         records.append(
