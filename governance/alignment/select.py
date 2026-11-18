@@ -1,4 +1,9 @@
-"""候选生成与选择：粗筛相似度矩阵 → 每个目标字段选最优源字段。"""
+"""候选生成与选择：相似度矩阵 → 每个目标字段保留 top-k 候选。
+
+与旧实现的区别：不再用 33 条静态映射当 gold，也不只保留 rank=1；允许 1:N
+（同一目标字段由多个源字段提供，如 ``code`` 来自诊断/操作/处方），由约束层
+决定哪些进入最终映射。
+"""
 
 from __future__ import annotations
 
@@ -35,6 +40,7 @@ SELECT_COLUMNS = [
     "source_table",
     "source_field",
     "score",
+    "rank",
     "method",
     "shared_source",
 ]
@@ -44,11 +50,16 @@ def build_candidates(
     sources: list[FieldView],
     targets: list[FieldView],
     weights: Weights | None = None,
+    allowed_tables: dict[tuple[str, str], set[str]] | None = None,
 ) -> pd.DataFrame:
     weights = weights or Weights()
+    allowed_tables = allowed_tables or {}
     records: list[dict] = []
     for target in targets:
+        allowed = allowed_tables.get((target.table, target.name))
         for source in sources:
+            if allowed is not None and source.table not in allowed:
+                continue
             parts = {
                 "string": string_score(source, target),
                 "type": type_score(source, target),
@@ -87,12 +98,16 @@ def build_candidates(
 def select_mappings(
     candidates: pd.DataFrame,
     threshold: float = 0.5,
-    weights: Weights | None = None,
+    top_k: int = 3,
 ) -> pd.DataFrame:
+    """保留每个目标字段的前 top_k 个候选；允许同一源字段服务多个目标。"""
     if candidates.empty:
         return pd.DataFrame(columns=SELECT_COLUMNS)
-    best = candidates[candidates["rank"] == 1].copy()
-    best = best[best["score"] >= threshold]
+    best = candidates[(candidates["rank"] <= top_k) & (candidates["score"] >= threshold)].copy()
+    # 类型族必须兼容（int/float 视为兼容），避免把时间字段映射到编码字段
+    best = best[best["type_score"] >= 0.5]
+    if best.empty:
+        return pd.DataFrame(columns=SELECT_COLUMNS)
     counts = best.groupby(["source_table", "source_field"]).size()
     best["shared_source"] = [
         bool(counts.loc[(row.source_table, row.source_field)] > 1)

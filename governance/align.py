@@ -1,87 +1,82 @@
-"""阶段 06 · 字段对齐与血缘。
+"""阶段 06 · 字段对齐（schema matching，不再使用 33 条静态映射）。
 
-"对齐"不只是把字段拼到一张表里，而是要把**每个字段的来历、变换、口径**写清楚，
-否则数据资产无法被审计、也无法在不同中心之间核对。
+对齐流程：
 
-两级映射：
+1. 从源表抽取字段视图（类型/空值率/基数，不读取值内容）；
+2. 从 ``target_schema.yaml`` 读取目标字段与允许的源表；
+3. 字符串 / 类型 / 结构 / 值域四个匹配器出分，加权组合；
+4. 每个目标字段保留 top-k 候选（允许 1:N），按类型与分数给出 auto/review；
+5. 输出 ``field_level.csv``、``derived_fields.csv``、``field_level_meds.csv``，
+   覆盖率与待复核项进 ``alignment_report.json``。
 
-* **字段级**（``field_level.csv``）：数据集字段 → 源表/源字段/转换规则/类型/缺失说明；
-* **记录级**（``record_level.parquet``）：每条数据集记录 → 源表 + 源记录 ID。
-
-聚合行（患者 360）无法一对一落到单条源记录，用 ``derived:patient_360:<subject_id>``
-表示 subject 级血缘——不伪造一对一。
+没有 gold：评价的是覆盖率与复核量，不是"与某张人工表的一致率"。
 """
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pandas as pd
+import yaml
 
 from governance.alignment import (
+    allowed_field_map,
+    allowed_table_map,
     build_candidates,
     extract_source_fields,
+    load_object_targets,
     select_mappings,
-    targets_from_gold,
+    target_views,
 )
 from governance.alignment.agentic import align_with_agents
 from governance.alignment.crosswalk import build_meds_crosswalk, validate_crosswalk
-from governance.alignment.evaluate import evaluate
+from governance.alignment.evaluate import coverage
+from governance.alignment.schema import family_of
 from governance.alignment.sql import build_sql, validate_sql
 from governance.context import GovernanceContext, require_state
 from governance.text_notes import note_text_frame
 
+DERIVED_PATH = Path(__file__).resolve().parent / "alignment" / "derived_fields.yaml"
 
-def _field(table: str, field: str, source_table: str, source_field: str,
-           transform: str, dtype: str, note: str) -> dict[str, str]:
-    return {
-        "dataset_table": table,
-        "dataset_field": field,
-        "source_table": source_table,
-        "source_field": source_field,
-        "transform": transform,
-        "dtype": dtype,
-        "note": note,
-    }
+FIELD_COLUMNS = [
+    "target_table",
+    "target_field",
+    "target_dtype",
+    "required",
+    "source_table",
+    "source_field",
+    "source_dtype",
+    "score",
+    "string_score",
+    "type_score",
+    "structure_score",
+    "value_score",
+    "rank",
+    "method",
+    "status",
+    "evidence",
+]
+
+DERIVED_COLUMNS = ["dataset_table", "field", "kind", "inputs", "formula", "note"]
 
 
-def _field_map() -> pd.DataFrame:
-    rows = [
-        _field("clinical_events", "record_id", "derived", "-", "按对象前缀生成：DX/PX/RX/NOTE", "string", "同一源行稳定唯一"),
-        _field("clinical_events", "subject_id", "patients", "subject_id", "直接引用", "int64", "全表非空，外键到 Patient"),
-        _field("clinical_events", "hadm_id", "admissions", "hadm_id", "直接引用", "int64", "门诊检验等可为空；本表事件均来自住院表"),
-        _field("clinical_events", "stay_id", "icustays", "stay_id", "按事件时间落入 [intime, outtime] 挂接", "int64", "无 ICU 时间窗时不挂接，保留空值"),
-        _field("clinical_events", "event_type", "derived", "-", "按来源表映射 Diagnosis/Procedure/Prescription/ClinicalNote", "string", "对象类别标签"),
-        _field("clinical_events", "event_time", "多个源表", "admittime/starttime/chartdate/charttime", "统一转 timestamp", "timestamp", "诊断无时间，保持空值不臆测"),
-        _field("clinical_events", "code_system", "derived", "-", "ICD9/ICD10/MIMIC_FORMULARY/MIMIC_NOTE", "string", "术语体系标签"),
-        _field("clinical_events", "code", "diagnoses_icd/procedures_icd/prescriptions", "icd_code/formulary_drug_cd", "去空格；不做术语归一", "string", "原样保留编码"),
-        _field("clinical_events", "display", "d_icd_diagnoses/d_icd_procedures/prescriptions", "long_title/drug", "字典连接", "string", "术语可读标签"),
-        _field("clinical_events", "numeric_value", "prescriptions", "dose_val_rx", "to_numeric", "float64", "非数值剂量（如 1-2）为空"),
-        _field("clinical_events", "text_value", "prescriptions/discharge", "dose_val_rx+dose_unit_rx+route / text", "拼接或原文", "string", "临床文本仅本地"),
-        _field("clinical_events", "icd_chapter", "derived", "-", "按 ICD 编码首字母/数字段映射章节", "string", "医学语义的粗粒度标签"),
-        _field("clinical_events", "source_table", "derived", "-", "记录来源表", "string", "记录级血缘"),
-        _field("clinical_events", "source_record_id", "derived", "-", "表名:行号 / discharge:note_id", "string", "可回溯到原始行"),
-        _field("clinical_events", "split", "事件仓储 subject_splits", "split", "按 subject_id 连接", "string", "患者级划分，防止联邦训练泄漏"),
-        _field("clinical_events", "sensitivity", "derived", "-", "按对象类型赋 L2/L3", "string", "分类分级标签"),
-        _field("patient_360", "subject_id", "patients", "subject_id", "直接引用", "int64", "主键"),
-        _field("patient_360", "gender", "patients", "gender", "直接引用", "string", "人口学"),
-        _field("patient_360", "anchor_age", "patients", "anchor_age", "直接引用", "int64", "MIMIC 锚定年龄"),
-        _field("patient_360", "anchor_year", "patients", "anchor_year", "直接引用", "int64", "去标识时间轴"),
-        _field("patient_360", "n_admissions", "admissions", "hadm_id", "count", "int64", "聚合"),
-        _field("patient_360", "n_icu", "icustays", "stay_id", "count", "int64", "聚合"),
-        _field("patient_360", "total_los_days", "admissions", "admittime/dischtime", "sum(dischtime-admittime)", "float64", "聚合"),
-        _field("patient_360", "mortality", "admissions", "hospital_expire_flag", "max", "int64", "聚合"),
-        _field("patient_360", "n_diagnosis", "diagnoses_icd", "icd_code", "count", "int64", "聚合"),
-        _field("patient_360", "n_procedure", "procedures_icd", "icd_code", "count", "int64", "聚合"),
-        _field("patient_360", "n_prescription", "prescriptions", "pharmacy_id", "count", "int64", "聚合"),
-        _field("patient_360", "n_notes", "discharge", "note_id", "count", "int64", "聚合"),
-        _field("patient_360", "top_diagnosis", "diagnoses_icd + d_icd_diagnoses", "icd_code/long_title", "出现次数最多的诊断", "string", "聚合标签"),
-        _field("patient_360", "top_drug", "prescriptions", "drug", "出现次数最多的药品", "string", "聚合标签"),
-        _field("patient_360", "text_chars", "discharge", "text", "sum(len(text))", "int64", "文本规模"),
-        _field("patient_360", "split", "事件仓储 subject_splits", "split", "按 subject_id 连接", "string", "患者级划分"),
-        _field("patient_360", "sensitivity", "derived", "-", "行级取最高级别 L3（含人口学）", "string", "分类分级标签"),
-    ]
-    return pd.DataFrame(rows)
+def _derived_fields() -> pd.DataFrame:
+    raw = yaml.safe_load(DERIVED_PATH.read_text(encoding="utf-8"))
+    rows: list[dict] = []
+    for dataset, fields in raw["datasets"].items():
+        for item in fields:
+            rows.append(
+                {
+                    "dataset_table": dataset,
+                    "field": item["field"],
+                    "kind": item["kind"],
+                    "inputs": "、".join(item.get("inputs", [])),
+                    "formula": item.get("formula", ""),
+                    "note": item.get("note", ""),
+                }
+            )
+    return pd.DataFrame(rows, columns=DERIVED_COLUMNS)
 
 
 def _record_map(events: pd.DataFrame, p360: pd.DataFrame) -> pd.DataFrame:
@@ -102,69 +97,132 @@ def _record_map(events: pd.DataFrame, p360: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([record_map, p360_map[record_map.columns]], ignore_index=True)
 
 
+def _status(score: float, rank: int, source_dtype: str, target_dtype: str, required: bool) -> str:
+    source_family, target_family = family_of(source_dtype), family_of(target_dtype)
+    dtype_ok = source_family == target_family or {source_family, target_family} == {"int", "float"}
+    if required and not dtype_ok:
+        return "review"
+    if rank == 1 and score >= 0.7 and dtype_ok:
+        return "auto"
+    return "review"
+
+
 def run(ctx: GovernanceContext) -> None:
     require_state(ctx, "clinical_events", "patient_360")
-    field_map = _field_map()
-    record_map = _record_map(ctx.clinical_events, ctx.patient_360)
 
-    ctx.field_map = field_map
-    ctx.record_map = record_map
+    targets = load_object_targets()
+    source_tables = dict(ctx.tables)
+    source_tables["discharge"] = note_text_frame(ctx)
+    sources = extract_source_fields(source_tables)
 
-    # 模式匹配：源字段 × 目标字段 → 候选矩阵 → 选最优 → 与 gold 对比
-    sources = extract_source_fields(ctx.tables)
-    targets = targets_from_gold(field_map)
-    candidates = build_candidates(sources, targets)
-    selected = select_mappings(candidates)
-    report = evaluate(selected, candidates, field_map)
+    candidates = build_candidates(
+        sources,
+        target_views(targets),
+        allowed_tables=allowed_table_map(targets),
+    )
+    # 目标字段还可以限定允许的源字段（如 display 只接受 long_title/label/drug）
+    allowed_fields = allowed_field_map(targets)
+    if not candidates.empty and allowed_fields:
+        mask = [
+            (row.target_table, row.target_field) not in allowed_fields
+            or row.source_field in allowed_fields[(row.target_table, row.target_field)]
+            for row in candidates.itertuples()
+        ]
+        candidates = candidates[mask].reset_index(drop=True)
+        candidates["rank"] = (
+            candidates.groupby(["target_table", "target_field"])["score"]
+            .rank(ascending=False, method="first")
+            .astype(int)
+        )
+    selected = select_mappings(candidates, threshold=0.5, top_k=3)
+
+    spec = {(target.table, target.field): target for target in targets}
+    rows: list[dict] = []
+    if not selected.empty:
+        detail = candidates.merge(
+            selected[["target_table", "target_field", "source_table", "source_field"]],
+            on=["target_table", "target_field", "source_table", "source_field"],
+            how="inner",
+        )
+        for row in detail.itertuples():
+            target = spec[(row.target_table, row.target_field)]
+            status = _status(
+                float(row.score),
+                int(row.rank),
+                str(row.source_dtype),
+                str(row.target_dtype),
+                bool(target.required),
+            )
+            rows.append(
+                {
+                    "target_table": row.target_table,
+                    "target_field": row.target_field,
+                    "target_dtype": target.dtype,
+                    "required": bool(target.required),
+                    "source_table": row.source_table,
+                    "source_field": row.source_field,
+                    "source_dtype": row.source_dtype,
+                    "score": float(row.score),
+                    "string_score": float(row.string_score),
+                    "type_score": float(row.type_score),
+                    "structure_score": float(row.structure_score),
+                    "value_score": float(row.value_score),
+                    "rank": int(row.rank),
+                    "method": "matcher",
+                    "status": status,
+                    "evidence": (
+                        f"string={row.string_score:.2f};type={row.type_score:.2f};"
+                        f"structure={row.structure_score:.2f};value={row.value_score:.2f}"
+                    ),
+                }
+            )
+    field_map = pd.DataFrame(rows, columns=FIELD_COLUMNS)
+    report = coverage(field_map, targets)
 
     agent_selected = None
     agent_info: dict = {"status": "skipped", "reason": "provider=off"}
-    agent_report = None
     if ctx.llm is not None and ctx.llm.config.provider != "off":
-        agent_selected, agent_info = align_with_agents(ctx, candidates, field_map)
-        if agent_selected is not None and not agent_selected.empty:
-            agent_report = evaluate(agent_selected, candidates, field_map)
-            agent_info.update(
-                {
-                    "precision": agent_report["precision"],
-                    "recall": agent_report["recall"],
-                    "top3_recall": agent_report["top3_recall"],
-                }
-            )
+        agent_selected, agent_info = align_with_agents(ctx, candidates)
 
     dest = ctx.settings.governance / "mapping"
     dest.mkdir(parents=True, exist_ok=True)
     field_map.to_csv(dest / "field_level.csv", index=False, encoding="utf-8-sig")
+    derived = _derived_fields()
+    derived.to_csv(dest / "derived_fields.csv", index=False, encoding="utf-8-sig")
+
     meds_crosswalk = build_meds_crosswalk()
     validate_crosswalk(meds_crosswalk)
     meds_crosswalk.to_csv(dest / "field_level_meds.csv", index=False, encoding="utf-8-sig")
-    ctx.field_map_meds = meds_crosswalk
+
     (dest / "MAPPING.md").write_text(
         "# 字段映射说明\n\n"
-        "本目录同时保留两套映射，用途不同：\n\n"
-        "* `field_level.csv`：**对象字段映射**（33 条），说明数据集字段 → 源表/源字段/转换；\n"
-        "* `field_level_meds.csv`：**MEDS 交叉表**，说明 MEDS 9 类事件 × 5 个核心字段由哪些源字段提供；\n"
-        "* `record_level.parquet`：记录级血缘，每条数据集记录 → 源表 + 源记录 ID。\n\n"
-        "两套映射不是替代关系：前者服务课程实验的字段映射表，后者服务 MEDS 对外接口。\n"
-        "`field_level_auto.csv` / `field_level_agent.csv` 是匹配器与智能体的候选结果，供对照。\n",
+        "本目录的三套文件用途不同：\n\n"
+        "* `field_level.csv`：**匹配结果**。由 name/type/structure/value 四个匹配器生成候选，"
+        "top-k 选择后给出 auto/review；不再有静态 33 条表。\n"
+        "* `derived_fields.csv`：**派生/聚合字段**（record_id、event_type、patient_360 的 n_* 等），"
+        "不参与源字段匹配，单独说明公式与输入。\n"
+        "* `field_level_meds.csv`：**MEDS 接口交叉表**，9 类事件 × 5 个核心字段，"
+        "用于检查对外接口字段是否有源字段可落。\n\n"
+        "`record_level.parquet` 是记录级血缘；"
+        "`field_level_auto.csv` / `field_level_agent.csv` 是匹配器/智能体的候选与对照。\n",
         encoding="utf-8",
     )
     selected.to_csv(dest / "field_level_auto.csv", index=False, encoding="utf-8-sig")
     if agent_selected is not None and not agent_selected.empty:
         agent_selected.to_csv(dest / "field_level_agent.csv", index=False, encoding="utf-8-sig")
     candidates.to_parquet(dest / "match_candidates.parquet", index=False)
+
     (ctx.settings.governance / "quality").mkdir(parents=True, exist_ok=True)
     (ctx.settings.governance / "quality" / "alignment_report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    if agent_report is not None:
+    if agent_selected is not None:
         (ctx.settings.governance / "quality" / "alignment_agent_report.json").write_text(
             json.dumps(agent_info, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-    # SQL 生成 + SQLite 对账
     try:
-        sql = build_sql(field_map)
+        sql = build_sql()
         (dest / "build_clinical_events.sql").write_text(sql, encoding="utf-8")
         expected = {
             str(key): int(value)
@@ -176,22 +234,28 @@ def run(ctx: GovernanceContext) -> None:
     (ctx.settings.governance / "quality" / "sql_execution_report.json").write_text(
         json.dumps(sql_report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    typed = record_map.copy()
+
+    typed = _record_map(ctx.clinical_events, ctx.patient_360)
     typed["hadm_id"] = pd.array(typed["hadm_id"], dtype="Int64")
     typed["stay_id"] = pd.array(typed["stay_id"], dtype="Int64")
     typed.to_parquet(dest / "record_level.parquet", index=False)
 
+    ctx.field_map = field_map
+    ctx.field_map_meds = meds_crosswalk
     ctx.stats.update(
         {
             "field_mappings": int(len(field_map)),
             "meds_field_mappings": int(len(meds_crosswalk)),
-            "record_mappings": int(len(record_map)),
+            "derived_fields": int(len(derived)),
+            "record_mappings": int(len(typed)),
             "alignment": {
-                "candidates": int(len(candidates)),
-                "auto_mappings": int(len(selected)),
-                "precision": report["precision"],
-                "recall": report["recall"],
-                "top3_recall": report["top3_recall"],
+                "targets": report["targets_total"],
+                "mapped": report["targets_mapped"],
+                "coverage": report["coverage"],
+                "required_coverage": report["required_coverage"],
+                "missing_required": report["missing_required"],
+                "auto": report["auto_mappings"],
+                "review": report["review_mappings"],
                 "agent": agent_info,
             },
             "sql_execution": sql_report,
@@ -199,10 +263,9 @@ def run(ctx: GovernanceContext) -> None:
     )
     ctx.log(
         "字段对齐",
-        f"对象字段映射 {len(field_map)} 条、MEDS 交叉表 {len(meds_crosswalk)} 条、"
-        f"记录级映射 {len(record_map)} 条；"
-        f"匹配器生成 {len(selected)} 条候选映射，"
-        f"P={report['precision']:.2f} / R={report['recall']:.2f} / Top3 R={report['top3_recall']:.2f}；"
-        f"SQL 对账 {sql_report.get('status')}（{sql_report.get('rows', 0)} 行）；"
-        f"智能体对齐 {agent_info.get('status')} / {agent_info.get('mappings', 0)} 条。",
+        f"schema matching：目标 {report['targets_total']} 个，覆盖 {report['targets_mapped']} 个"
+        f"（{report['coverage']:.1%}），必填覆盖 {report['required_coverage']:.1%}；"
+        f"auto {report['auto_mappings']} / review {report['review_mappings']}；"
+        f"派生字段 {len(derived)} 条；MEDS 交叉表 {len(meds_crosswalk)} 条；"
+        f"SQL 对账 {sql_report.get('status')}（{sql_report.get('rows', 0)} 行）。",
     )

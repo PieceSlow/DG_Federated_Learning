@@ -1,6 +1,6 @@
 """MEDS 字段交叉表：源字段 → MEDS 核心 5 字段。
 
-与 ``field_level.csv``（对象字段映射，33 条）并存：
+与 ``field_level.csv``（schema matching 的匹配结果）并存：
 * ``field_level.csv`` 回答"这个数据集字段从哪个源字段来、怎么变换"；
 * ``field_level_meds.csv`` 回答"MEDS 的每类事件、每个核心字段由哪些源字段提供"。
 

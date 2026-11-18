@@ -8,8 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from governance.align import _field_map
-from governance.alignment.sql import build_sql, validate_sql
+from governance.alignment.sql import EVENT_FIELDS, build_sql, validate_sql
 from governance.alignment.transform import TRANSFORMS
 from tests.synthetic import write_synthetic_mimic
 
@@ -27,7 +26,7 @@ def _tables(tmp: Path) -> tuple[dict[str, pd.DataFrame], pd.DataFrame]:
 
 class SqlBuildTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.sql = build_sql(_field_map())
+        self.sql = build_sql()
 
     def test_four_event_types(self) -> None:
         for marker in ("-- Diagnosis", "-- Procedure", "-- Prescription", "-- ClinicalNote"):
@@ -35,9 +34,7 @@ class SqlBuildTest(unittest.TestCase):
         self.assertEqual(self.sql.count("\nUNION ALL\n"), 3)
 
     def test_covers_all_target_fields(self) -> None:
-        fields = _field_map()
-        fields = fields[fields["dataset_table"] == "clinical_events"]
-        for field in fields["dataset_field"]:
+        for field in EVENT_FIELDS:
             self.assertIn(f"AS {field}", self.sql)
 
     def test_dose_transform(self) -> None:
@@ -50,7 +47,7 @@ class SqlExecutionTest(unittest.TestCase):
     def test_runs_and_matches_row_counts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tables, notes = _tables(Path(tmp))
-            sql = build_sql(_field_map())
+            sql = build_sql()
             expected = {"Diagnosis": 4, "Procedure": 2, "Prescription": 3, "ClinicalNote": 2}
             report = validate_sql(sql, tables, notes, expected)
             self.assertEqual(report["status"], "ok")
@@ -60,7 +57,7 @@ class SqlExecutionTest(unittest.TestCase):
     def test_mismatch_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tables, notes = _tables(Path(tmp))
-            report = validate_sql(build_sql(_field_map()), tables, notes, {"Diagnosis": 999})
+            report = validate_sql(build_sql(), tables, notes, {"Diagnosis": 999})
             self.assertEqual(report["status"], "mismatch")
 
 

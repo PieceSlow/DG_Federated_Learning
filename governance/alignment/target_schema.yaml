@@ -1,0 +1,56 @@
+﻿# 对象字段对齐的目标 schema（不再使用 33 条静态映射）。
+#
+# 只有"由源字段直接提供"的目标字段进入匹配；派生字段（record_id/event_type/
+# source_table/source_record_id/split/sensitivity/icd_chapter）由代码生成，
+# 不参与匹配，见 derived_fields.yaml。
+version: "1.0"
+targets:
+  clinical_events:
+    subject_id:
+      dtype: int64
+      required: true
+      description: 患者标识
+      source_tables: [patients, admissions, icustays, diagnoses_icd, procedures_icd, prescriptions, labevents, discharge]
+      source_fields: [subject_id]
+    hadm_id:
+      dtype: int64
+      required: false
+      description: 住院标识
+      source_tables: [admissions, icustays, diagnoses_icd, procedures_icd, prescriptions, labevents, discharge]
+      source_fields: [hadm_id]
+    stay_id:
+      dtype: int64
+      required: false
+      description: ICU 停留标识
+      source_tables: [icustays]
+      source_fields: [stay_id]
+    event_time:
+      dtype: datetime64[ns]
+      required: false
+      description: 事件时间
+      source_tables: [admissions, icustays, procedures_icd, prescriptions, labevents, discharge]
+      source_fields: [admittime, dischtime, intime, outtime, chartdate, starttime, charttime]
+    code:
+      dtype: object
+      required: true
+      description: 事件编码（ICD/院内药品/检验项目/文书类型）
+      source_tables: [diagnoses_icd, procedures_icd, prescriptions, labevents, discharge]
+      source_fields: [icd_code, formulary_drug_cd, itemid, note_type]
+    display:
+      dtype: object
+      required: false
+      description: 编码的可读描述
+      source_tables: [d_icd_diagnoses, d_icd_procedures, d_labitems, prescriptions]
+      source_fields: [long_title, label, drug]
+    numeric_value:
+      dtype: float64
+      required: false
+      description: 数值结果/剂量
+      source_tables: [labevents, prescriptions, icustays]
+      source_fields: [valuenum, dose_val_rx, los]
+    text_value:
+      dtype: object
+      required: false
+      description: 文本结果/剂量串/文书原文
+      source_tables: [discharge, prescriptions, labevents]
+      source_fields: [text, drug, dose_val_rx]

@@ -9,9 +9,21 @@ from governance.alignment.schema import FieldView, family_of
 
 _SUFFIXES = ("id", "time", "date", "name", "type", "code", "value", "status")
 
+#: 同义 token：让 label/title/display/drug 这类"可读名"能互相匹配
+_SYNONYMS = {
+    "title": "label",
+    "name": "label",
+    "description": "label",
+    "display": "label",
+    "drug": "label",
+    "num": "value",
+    "numeric": "value",
+}
+
 
 def name_tokens(name: str) -> set[str]:
     text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", str(name))
+    text = text.replace("valuenum", "value num")
     parts = [part for part in re.split(r"[_\W]+", text.lower()) if part]
     tokens: set[str] = set()
     for part in parts:
@@ -24,7 +36,7 @@ def name_tokens(name: str) -> set[str]:
                 break
         if not matched:
             tokens.add(part)
-    return tokens
+    return {_SYNONYMS.get(token, token) for token in tokens}
 
 
 def string_score(source: FieldView, target: FieldView) -> float:

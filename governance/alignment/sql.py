@@ -101,7 +101,7 @@ _DERIVED = {
 }
 
 
-def _expression(target_field: str, event_type: str, spec: dict[str, Any], source_field: str) -> str:
+def _expression(target_field: str, event_type: str, spec: dict[str, Any]) -> str:
     if target_field == "record_id":
         return spec["record_expr"]
     if target_field == "event_type":
@@ -118,22 +118,38 @@ def _expression(target_field: str, event_type: str, spec: dict[str, Any], source
         return "NULL /* 由 ICD 编码后处理映射 */"
     if target_field in _DERIVED:
         return spec[target_field]
-    if source_field in spec["columns"]:
-        return f"t.{source_field}"
+    if target_field in spec["columns"]:
+        return f"t.{target_field}"
     return "NULL"
 
 
-def build_sql(field_map: pd.DataFrame) -> str:
-    event_fields = field_map[field_map["dataset_table"] == "clinical_events"]
-    if event_fields.empty:
-        raise ValueError("字段映射中没有 clinical_events")
+#: clinical_events 的固定字段；SQL 由事件映射规范生成，不依赖任何静态字段映射表。
+EVENT_FIELDS = [
+    "record_id",
+    "subject_id",
+    "hadm_id",
+    "stay_id",
+    "event_type",
+    "event_time",
+    "code_system",
+    "code",
+    "display",
+    "numeric_value",
+    "text_value",
+    "icd_chapter",
+    "source_table",
+    "source_record_id",
+    "split",
+    "sensitivity",
+]
 
+
+def build_sql() -> str:
     selects: list[str] = []
     for event_type, spec in SPECS.items():
         columns = []
-        for row in event_fields.itertuples():
-            target = str(row.dataset_field)
-            expression = _expression(target, event_type, spec, str(row.source_field))
+        for target in EVENT_FIELDS:
+            expression = _expression(target, event_type, spec)
             columns.append(f"    {expression} AS {target}")
         select = (
             f"-- {event_type}\nSELECT\n" + ",\n".join(columns)
