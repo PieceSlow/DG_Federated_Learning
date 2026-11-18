@@ -29,6 +29,7 @@ import pandas as pd
 import yaml
 
 from governance.concept_key import ConceptResolver, concept_object_id
+from governance.levels import level_of
 from governance.icd import icd_chapter
 
 DEFINITIONS_PATH = Path(__file__).resolve().parent / "definitions.yaml"
@@ -277,7 +278,7 @@ def _dataset_frame(events: pd.DataFrame | None) -> pd.DataFrame:
         },
         {
             "object_id": "Dataset:patient_360",
-            "sensitivity": "L3",
+            "sensitivity": level_of("C08"),
             "sharing_boundary": "aggregate_only",
         },
         {

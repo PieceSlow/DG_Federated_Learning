@@ -16,6 +16,8 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from governance.context import GovernanceContext, require_state
+from governance.levels import level_of
+from governance.review import write_review
 
 RULES_VERSION = "1.0"
 
@@ -46,7 +48,12 @@ RULES = [
 
 def _event_levels(ctx: GovernanceContext) -> dict[str, str]:
     """从 KV 标签 ``L1.sensitivity`` 读取事件级别；缺标签时回退规则表默认值。"""
-    defaults = {"Diagnosis": "L2", "Procedure": "L2", "Prescription": "L2", "ClinicalNote": "L3"}
+    defaults = {
+        "Diagnosis": level_of("C03"),
+        "Procedure": level_of("C05"),
+        "Prescription": level_of("C04"),
+        "ClinicalNote": level_of("C06"),
+    }
     labels = getattr(ctx, "object_labels", None)
     if labels is None or labels.empty or ctx.clinical_events is None:
         return defaults
@@ -76,11 +83,11 @@ def _result(ctx: GovernanceContext) -> pd.DataFrame:
             ["clinical_events", "Procedure", "C05", levels["Procedure"], int((events.event_type == "Procedure").sum())],
             ["clinical_events", "Prescription", "C04", levels["Prescription"], int((events.event_type == "Prescription").sum())],
             ["clinical_events", "ClinicalNote", "C06", levels["ClinicalNote"], int((events.event_type == "ClinicalNote").sum())],
-            ["source_tables", "Encounter", "C02", "L3", int(len(ctx.tables["admissions"]))],
-            ["source_tables", "Demographics", "C01", "L3", int(len(ctx.tables["patients"]))],
+            ["source_tables", "Encounter", "C02", level_of("C02"), int(len(ctx.tables["admissions"]))],
+            ["source_tables", "Demographics", "C01", level_of("C01"), int(len(ctx.tables["patients"]))],
             # 患者 360 是"一人一行"的患者级视图，不是聚合统计：按最高级别 L3 落，
             # 与标签（L1.sensitivity）、数据本身一致；C07/L1 只给 k≥10 的聚合统计。
-            ["patient_360", "PatientSummary", "C08", "L3", int(len(ctx.patient_360))],
+            ["patient_360", "PatientSummary", "C08", level_of("C08"), int(len(ctx.patient_360))],
         ],
         columns=["dataset_table", "object", "category_id", "level", "rows"],
     )
@@ -139,6 +146,8 @@ def _write_level_history(dest, result: pd.DataFrame) -> dict:
 def run(ctx: GovernanceContext) -> None:
     require_state(ctx, "clinical_events", "patient_360")
     rules = pd.DataFrame(RULES, columns=COLUMNS)
+    # 级别以 levels.yaml 为准：规则表里的 level 列只是"目录展示"，不参与执行
+    rules["level"] = [level_of(str(item[0])) for item in RULES]
     result = _result(ctx)
 
     dest = ctx.settings.governance / "classification"
@@ -146,6 +155,13 @@ def run(ctx: GovernanceContext) -> None:
     rules.to_csv(dest / "rules.csv", index=False, encoding="utf-8-sig")
     result.to_csv(dest / "result.csv", index=False, encoding="utf-8-sig")
     diff = _write_level_history(dest, result)
+
+    # 待复核信号：新表/新列/疑似自由文本/级别变化；首次运行只建基线
+    snapshot_path = ctx.settings.governance / "metadata" / "schema_snapshot.json"
+    review = {"count": 0, "signals": []}
+    if snapshot_path.exists():
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        review = write_review(dest, snapshot, level_diff=diff)
 
     ctx.stats.update(
         {
@@ -166,5 +182,7 @@ def run(ctx: GovernanceContext) -> None:
         "分类分级",
         f"{len(rules)} 条分类规则、{len(result)} 条落地结果；"
         f"涉及级别 {', '.join(sorted(set(result['level'])))}"
-        f"{change_note}（历史见 classification/level_history.jsonl）。",
+        f"{change_note}（历史见 classification/level_history.jsonl）；"
+        + (f"待复核 {review['count']} 项（classification/review_required.json）。"
+           if review["count"] else "无新增/变更，无需复核。"),
     )

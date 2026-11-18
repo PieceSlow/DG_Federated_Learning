@@ -1,0 +1,17 @@
+# 分级级别：单一来源（classify 与 labels 都读这里）。
+#
+# 改这里的级别 → rules.csv / result.csv / 标签里的 Dataset 级别一起变，
+# 不需要再改两个 Python 文件；改完跑一次，level_history.jsonl 会记录 diff。
+#
+# 注意：这是"默认级别"；事件级以 KV 标签 L1.sensitivity 的实际值为准（数据本身决定），
+# 这里的 C03–C06 只是缺标签时的回退值。
+version: "1.0"
+categories:
+  C01: L3   # 患者人口学
+  C02: L3   # 住院就诊
+  C03: L2   # 诊断编码
+  C04: L2   # 药物处方
+  C05: L2   # 医疗操作
+  C06: L3   # 临床文本
+  C07: L1   # 统计汇总（k>=10）
+  C08: L3   # 患者级视图（patient_360）
