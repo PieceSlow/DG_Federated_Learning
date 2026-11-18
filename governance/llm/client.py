@@ -37,7 +37,7 @@ class LLMConfig:
     base_url: str = "https://api.deepseek.com"
     api_key: str | None = None
     temperature: float = 0.0
-    max_tokens: int = 1200
+    max_tokens: int = 4000  # 8 类对象 + 关系的 JSON 约 1.5k~2.5k tokens，1200 会被截断
     timeout_s: float = 60.0
 
     def validate(self) -> None:
@@ -57,7 +57,7 @@ def config_from_env(provider: str | None = None, model: str | None = None) -> LL
         base_url=os.environ.get("LLM_BASE_URL", "https://api.deepseek.com"),
         api_key=os.environ.get("DEEPSEEK_API_KEY"),
         temperature=float(os.environ.get("LLM_TEMPERATURE", "0")),
-        max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "1200")),
+        max_tokens=int(os.environ.get("LLM_MAX_TOKENS", "4000")),
         timeout_s=float(os.environ.get("LLM_TIMEOUT_S", "60")),
     )
 
@@ -80,6 +80,7 @@ class LLMResponse:
     completion_tokens: int = 0
     model: str = ""
     cached: bool = False
+    finish_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -88,6 +89,7 @@ class LLMResponse:
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
             "model": self.model,
+            "finish_reason": self.finish_reason,
         }
 
     @classmethod
@@ -98,6 +100,7 @@ class LLMResponse:
             prompt_tokens=int(data.get("prompt_tokens", 0)),
             completion_tokens=int(data.get("completion_tokens", 0)),
             model=data.get("model", ""),
+            finish_reason=data.get("finish_reason", ""),
         )
 
 
@@ -141,8 +144,17 @@ class ApiProvider:
                 response = requests.post(url, headers=headers, json=body, timeout=config.timeout_s)
                 response.raise_for_status()
                 data = response.json()
-                text = data["choices"][0]["message"]["content"]
+                choice = data["choices"][0]
+                text = choice["message"].get("content") or ""
+                finish_reason = str(choice.get("finish_reason", ""))
                 usage = data.get("usage", {})
+                if not text:
+                    raise LLMError(
+                        "LLM 返回空内容"
+                        f"（finish_reason={finish_reason}，"
+                        f"completion_tokens={usage.get('completion_tokens')}）；"
+                        "finish_reason=length 说明 max_tokens 太小，可用 LLM_MAX_TOKENS 调大"
+                    )
                 parsed = _parse_json(text)
                 return LLMResponse(
                     text=text,
@@ -150,6 +162,7 @@ class ApiProvider:
                     prompt_tokens=int(usage.get("prompt_tokens", 0)),
                     completion_tokens=int(usage.get("completion_tokens", 0)),
                     model=config.model,
+                    finish_reason=finish_reason,
                 )
             except Exception as exc:  # noqa: BLE001 - 统一转换为 LLMError
                 last_error = exc
@@ -188,7 +201,7 @@ class LLMService:
 
     def complete(self, request: LLMRequest) -> LLMResponse:
         self.budget.check()
-        key = cache_key(request, self.config.model)
+        key = cache_key(request, self.config.model, request.max_tokens or self.config.max_tokens)
         if self.cache is not None:
             cached = self.cache.get(key)
             if cached is not None:
@@ -223,13 +236,14 @@ class LLMService:
         return response
 
 
-def cache_key(request: LLMRequest, model: str) -> str:
+def cache_key(request: LLMRequest, model: str, max_tokens: int = 0) -> str:
     import hashlib
 
     payload = json.dumps(
         _stringify_keys(
             {
                 "model": model,
+                "max_tokens": max_tokens,
                 "prompt_id": request.prompt_id,
                 "system": request.system,
                 "user": request.user,
