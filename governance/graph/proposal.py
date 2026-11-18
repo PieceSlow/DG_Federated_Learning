@@ -78,6 +78,22 @@ def validate_proposals(
     return errors
 
 
+#: 下游按名字取边（标签、校验），所以关系名必须收敛到 canonical 名字。
+#: 智能体偶尔会写成 has_icustay / has_clinicalnote，这里按 (from, to) 兜底改名。
+CANONICAL_RELATIONS: dict[tuple[str, str], str] = {
+    ("Patient", "Encounter"): "has_encounter",
+    ("Encounter", "ICUStay"): "has_icu_stay",
+    ("Encounter", "Diagnosis"): "has_diagnosis",
+    ("Encounter", "Prescription"): "has_prescription",
+    ("Encounter", "Procedure"): "has_procedure",
+    ("Encounter", "ClinicalNote"): "has_note",
+}
+
+
+def canonical_relation_name(name: str, source: str, target: str) -> str:
+    return CANONICAL_RELATIONS.get((source, target), name)
+
+
 def model_from_proposals(
     objects: list[dict[str, Any]],
     relations: list[dict[str, Any]],
@@ -103,7 +119,9 @@ def model_from_proposals(
     for item in relations:
         rel_specs.append(
             RelationSpec(
-                name=str(item["name"]),
+                name=canonical_relation_name(
+                    str(item["name"]), str(item["from"]), str(item["to"])
+                ),
                 from_object=str(item["from"]),
                 to_object=str(item["to"]),
                 on=str(item["on"]),

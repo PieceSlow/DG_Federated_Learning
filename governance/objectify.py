@@ -82,6 +82,15 @@ def run(ctx: GovernanceContext) -> None:
     if graph_data is None:
         graph_data = build_graph(ctx.tables, notes=notes)
     graph_data = build_concept_layer(graph_data, ctx.concept_map)
+    if notes is not None and len(notes) and "ClinicalNote" not in graph_data.manifest["objects"]:
+        # 智能体可能漏掉文书对象；不阻断流水线，但要让审计和报告看得见
+        ctx.add_issue(
+            "GRAPH_MISSING_OBJECT",
+            "warning",
+            "graph",
+            "图谱写缺少 ClinicalNote 对象（文书未纳入对象模型）",
+            subject=None,
+        )
 
     objects = _objects_from_graph(graph_data)
     relations = _relations_from_graph(graph_data)

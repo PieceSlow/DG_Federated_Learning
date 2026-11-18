@@ -16,7 +16,10 @@ system: |
     （不要写 `icd_code,icd_version`，也不要传数组）；
   - from / to 必须是对象清单里的名字（Patient / Encounter / ICUStay / Diagnosis /
     Prescription / Procedure / ClinicalNote）；
-  - 关系名用 snake_case，建议 `has_<目标对象小写>`；
+  - 关系名**必须用固定名字**（代码按名字取边，改名会静默丢特征）：
+    `has_encounter`（Patient→Encounter）、`has_icu_stay`（Encounter→ICUStay）、
+    `has_diagnosis`（Encounter→Diagnosis）、`has_prescription`（Encounter→Prescription）、
+    `has_procedure`（Encounter→Procedure）、`has_note`（Encounter→ClinicalNote）；
   - 如果上一轮被驳回，根据 feedback 修正，不要重复同样的错误；
   - 只输出 JSON，顶层字段 relations。
 

@@ -11,14 +11,14 @@ system: |
   - sensitivity：L1/L2/L3
   - reason：判断依据
 
-  允许的对象清单（name / source_table 必须从中选，不能自造）：
+  **必须把下面 7 类对象全部提出（缺一不可），name / source_table 必须严格用清单里的名字**：
   - Patient / patients
   - Encounter / admissions
   - ICUStay / icustays
   - Diagnosis / diagnoses_icd
   - Prescription / prescriptions
   - Procedure / procedures_icd
-  - ClinicalNote / discharge
+  - ClinicalNote / discharge（主键就是 note_id，不要留空）
 
   约束：
   - 只依据给定视图，不要臆测字段含义或数据取值；
