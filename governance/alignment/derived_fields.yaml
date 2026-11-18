@@ -28,6 +28,11 @@ datasets:
       inputs: [source_table, rowid, note_id]
       formula: "表名:行号 / discharge:note_id"
       note: "可回溯到原始行"
+    - field: stay_id
+      kind: link
+      inputs: [icustays.hadm_id, icustays.intime, icustays.outtime, event_time]
+      formula: "按 [intime, outtime] 时间窗把事件挂到 ICU 停留；无时间的事件仅在该住院只有一个 ICU 停留时挂接"
+      note: "不是源字段直接提供；build_clinical_events.sql 不产出该列（mapping_usage 记 link），由 assemble 后处理补齐"
     - field: split
       kind: derived
       inputs: [subject_id]

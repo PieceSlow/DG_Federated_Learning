@@ -19,6 +19,8 @@ import time
 
 import pandas as pd
 
+from governance.alignment.interface import check_events
+from governance.alignment.targets import load_targets
 from governance.config import resolve_data_file
 from governance.context import GovernanceContext
 from governance.ingest import scan_for_subjects
@@ -154,122 +156,254 @@ def _event(
     )
 
 
-def _map_structured(ctx: GovernanceContext) -> None:
-    tables = ctx.tables
-    objects = ctx.objects
-    admission_ids = objects["admission_ids"]
+#: 编码模板占位符的取值转换（``{列:转换}``）；不写转换按 ``raw`` 处理。
+_VALUE_RENDERS = {
+    "raw": lambda value: str(value).strip(),
+    "int": lambda value: str(int(float(value))),
+    "unit": lambda value: re.sub(r"[^A-Za-z0-9%]+", "_", str(value).strip()).strip("_") or "UNKNOWN",
+    "drug": lambda value: re.sub(r"[^A-Za-z0-9_.\-]+", "_", str(value).strip()),
+}
 
-    for _, row in objects["patients"].iterrows():
-        _event(ctx, row.subject_id, None, f"GENDER//{row.gender}", None, "patients", f"patients:{row.name}")
-        if pd.notna(row.get("anchor_age")):
+_PLACEHOLDER = re.compile(r"\{([^{}]+)\}")
+
+
+def _blank(value) -> bool:
+    """空值判定：None/NaN/空串都算缺；用于 ``emit_if`` 与派生列。"""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _int_or_none(value) -> int | None:
+    if _blank(value):
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _stamp(value):
+    if _blank(value):
+        return None
+    stamp = pd.to_datetime(value, errors="coerce")
+    return None if pd.isna(stamp) else stamp
+
+
+def _render_code(template: str, row: pd.Series, event_type: str) -> str:
+    """按模板渲染编码；占位符必须是源行里真实存在的列，否则直接报错。"""
+
+    def replace(match: re.Match) -> str:
+        name, _, transform = match.group(1).partition(":")
+        if name not in row.index:
+            raise KeyError(f"{event_type} 的编码模板引用了不存在的列: {name}")
+        render = _VALUE_RENDERS.get(transform or "raw")
+        if render is None:
+            raise KeyError(f"{event_type} 的编码模板使用了未声明的转换: {transform}")
+        return render(row[name])
+
+    return _PLACEHOLDER.sub(replace, template)
+
+
+def _field_time(field, row: pd.Series):
+    """时间列（可带 ``fallback`` 兜底列）。"""
+    if not field.column:
+        return None
+    value = row.get(field.column)
+    if _blank(value) and field.fallback:
+        value = row.get(field.fallback)
+    return _stamp(value)
+
+
+def _field_numeric(field, row: pd.Series) -> float | None:
+    if field.source != "derived" or not field.column:
+        return None
+    value = row.get(field.column)
+    if _blank(value):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _field_text(field, row: pd.Series) -> str | None:
+    """文本列：``only_if_null`` 里的列有值时不再写文本（数值与文本二选一）。"""
+    if field.source != "derived" or not field.column:
+        return None
+    for column in field.only_if_null:
+        if not _blank(row.get(column)):
+            return None
+    value = row.get(field.column)
+    if _blank(value):
+        return None
+    text = str(value)
+    return text[: field.max_chars] if field.max_chars else text
+
+
+def _attach_join(frame: pd.DataFrame, tables: dict[str, pd.DataFrame], target) -> pd.DataFrame:
+    """按声明把关联表的列挂到源行上（保持左侧索引，``source_record_id`` 才稳定）。"""
+    join = target.join
+    if not join:
+        return frame
+    other = tables.get(str(join.get("table", "")))
+    on = str(join.get("on_column", ""))  # 不能写 on:，YAML 1.1 会把 on 解析成布尔 True
+    if other is None or other.empty or on not in frame.columns or on not in other.columns:
+        return frame
+    columns = [c for c in join.get("columns", []) if c in other.columns and c not in frame.columns]
+    if not columns:
+        return frame
+    right = other[[on, *columns]].drop_duplicates(subset=[on]).set_index(on)
+    return frame.join(right, on=on)
+
+
+def _dictionary_keys(table: str, columns: list[str], tables: dict[str, pd.DataFrame]) -> set[tuple]:
+    frame = tables.get(table)
+    if frame is None or frame.empty:
+        return set()
+    missing = [column for column in columns if column not in frame.columns]
+    if missing:
+        return set()
+    return {
+        tuple(str(value) for value in row)
+        for row in frame[columns].itertuples(index=False, name=None)
+    }
+
+
+def _check_declared_columns(targets, tables: dict[str, pd.DataFrame]) -> None:
+    """接口声明里引用的源列必须在已接入的表里存在。
+
+    这条检查是"声明驱动实现"的护栏：过去 ``meds_targets.yaml`` 可以随手写一个不存在的
+    列（例如 ``labevents.value``），实现里反正读不到、发出来是空值，而且没人发现。
+    """
+    missing: list[str] = []
+    for event_type, target in targets.items():
+        if target.extractor != "structured" or not target.table:
+            continue
+        frame = tables.get(target.table)
+        if frame is None:
+            continue
+        join = target.join or {}
+        join_columns = set(join.get("columns", ())) if join else set()
+        for name, field in target.fields.items():
+            columns: list[str] = []
+            if field.column:
+                columns.append(field.column)
+            columns.extend(field.only_if_null)
+            columns.extend(use.partition(".")[2] for use in field.uses)
+            for column in columns:
+                if not column:
+                    continue
+                if column in join_columns:
+                    continue
+                if column not in frame.columns:
+                    missing.append(f"{event_type}.{name} → {target.table}.{column}")
+    if missing:
+        raise KeyError("接口声明引用了已接入表里不存在的列：" + "；".join(sorted(set(missing))))
+
+
+def _emit_interface_events(ctx: GovernanceContext) -> None:
+    """按 ``alignment/meds_targets.yaml`` 声明产出结构化事件。
+
+    表名、编码模板、时间/数值/文本列都从**接口声明**读取，不再各自写死：
+    过去这里是 6 段手写循环，而 ``meds_targets.yaml`` 只是旁边一张没人读的对照表，
+    声明与实现因此长期不一致（例如声明 ``DIAGNOSIS.time required``，代码一直发 NULL）。
+    """
+    targets = load_targets()
+    tables = ctx.tables
+    _check_declared_columns(targets, tables)
+    admission_ids = ctx.objects["admission_ids"]
+    dictionary_cache: dict[tuple, set[tuple]] = {}
+    counts: dict[str, dict[str, int]] = {}
+
+    for event_type, target in targets.items():
+        if target.extractor != "structured" or not target.table:
+            continue  # NOTE 由 _extract_text 产出
+        frame = tables.get(target.table)
+        if frame is None or frame.empty:
+            continue
+        frame = _attach_join(frame, tables, target)
+
+        dictionary_columns = list(target.dictionary.get("columns", ())) if target.dictionary else []
+        dictionary_table = str(target.dictionary.get("table", "")) if target.dictionary else ""
+        if dictionary_table:
+            cache_key = (dictionary_table, tuple(dictionary_columns))
+            if cache_key not in dictionary_cache:
+                dictionary_cache[cache_key] = _dictionary_keys(dictionary_table, dictionary_columns, tables)
+            known = dictionary_cache[cache_key]
+        else:
+            known = set()
+
+        rows = emitted = hits = 0
+        for name, row in frame.iterrows():
+            record = f"{target.table}:{name}"
+            subject = _int_or_none(row.get(target.keys.get("subject_id", "subject_id")))
+            if subject is None:
+                continue
+            hadm = _int_or_none(row.get(target.keys["hadm_id"])) if "hadm_id" in target.keys else None
+            stay = _int_or_none(row.get(target.keys["stay_id"])) if "stay_id" in target.keys else None
+
+            if target.emit_if and any(_blank(row.get(column)) for column in target.emit_if):
+                if target.skip_issue:
+                    ctx.add_issue(
+                        str(target.skip_issue.get("rule", "REQUIRED_FIELD")),
+                        "warning",
+                        target.table,
+                        str(target.skip_issue.get("detail", "缺少必填源字段，未输出")),
+                        subject=subject,
+                        record=record,
+                    )
+                continue
+            rows += 1
+
+            if target.check_hadm and hadm is not None and hadm not in admission_ids:
+                ctx.add_issue(
+                    "OBJECT_ASSOCIATION", "error", target.table,
+                    f"{target.description}的 hadm_id={hadm} 不在住院对象中",
+                    subject=subject, record=record,
+                )
+
+            if dictionary_table:
+                key = tuple(str(row.get(column)) for column in dictionary_columns)
+                if key in known:
+                    hits += 1
+                else:
+                    ctx.add_issue(
+                        "CODE_NOT_IN_DICTIONARY", "warning", target.table,
+                        f"{'/'.join(key)} 不在 {dictionary_table} 中",
+                        subject=subject, record=record,
+                    )
+
             _event(
                 ctx,
-                row.subject_id,
-                None,
-                "DEMOGRAPHIC//ANCHOR_AGE",
-                float(row.anchor_age),
-                "patients",
-                f"patients:{row.name}",
+                subject,
+                _field_time(target.fields["time"], row),
+                _render_code(target.fields["code"].template, row, event_type),
+                _field_numeric(target.fields["numeric_value"], row),
+                target.table,
+                record,
+                hadm=hadm,
+                stay=stay,
+                text=_field_text(target.fields["text_value"], row),
             )
+            emitted += 1
 
-    for _, row in objects["encounters"].iterrows():
-        hadm = int(row.hadm_id) if pd.notna(row.hadm_id) else None
-        _event(ctx, row.subject_id, row["admittime"], "ADMISSION//HOSPITAL", None,
-               "admissions", f"admissions:{row.name}", hadm=hadm)
-        if pd.notna(row["dischtime"]):
-            _event(ctx, row.subject_id, row["dischtime"], "DISCHARGE//HOSPITAL", None,
-                   "admissions", f"admissions:{row.name}", hadm=hadm)
-
-    for _, row in objects["icu_stays"].iterrows():
-        hadm = int(row.hadm_id) if pd.notna(row.hadm_id) else None
-        stay = int(row.stay_id) if pd.notna(row.stay_id) else None
-        unit = re.sub(r"[^A-Za-z0-9]+", "_", str(row.first_careunit)).strip("_") or "ICU"
-        _event(ctx, row.subject_id, row["intime"], f"ICU_STAY//{unit}", None,
-               "icustays", f"icustays:{row.name}", hadm=hadm, stay=stay)
-        if pd.notna(row["outtime"]):
-            _event(ctx, row.subject_id, row["outtime"], "ICU_DISCHARGE//HOSPITAL", None,
-                   "icustays", f"icustays:{row.name}", hadm=hadm, stay=stay)
-
-    dx_labels = {
-        (int(row.icd_version), str(row.icd_code)): row.long_title
-        for _, row in tables["d_icd_diagnoses"].iterrows()
-        if pd.notna(row.icd_code)
-    }
-    dx_total = dx_matched = 0
-    for _, row in tables["diagnoses_icd"].iterrows():
-        if pd.isna(row.icd_code):
-            ctx.add_issue("CODE_MAPPING", "warning", "diagnoses_icd", "缺少 icd_code，未输出",
-                          subject=int(row.subject_id), record=f"diagnoses_icd:{row.name}")
-            continue
-        dx_total += 1
-        key = (int(row.icd_version), str(row.icd_code))
-        if key not in dx_labels:
-            ctx.add_issue("CODE_NOT_IN_DICTIONARY", "warning", "diagnoses_icd",
-                          f"ICD{key[0]} 编码 {key[1]} 不在 d_icd_diagnoses 中",
-                          subject=int(row.subject_id), record=f"diagnoses_icd:{row.name}")
-        else:
-            dx_matched += 1
-        hadm = int(row.hadm_id) if pd.notna(row.hadm_id) else None
-        if hadm is not None and hadm not in admission_ids:
-            ctx.add_issue("OBJECT_ASSOCIATION", "error", "diagnoses_icd",
-                          f"诊断的 hadm_id={hadm} 不在住院对象中",
-                          subject=int(row.subject_id), record=f"diagnoses_icd:{row.name}")
-        _event(ctx, row.subject_id, None, f"DIAGNOSIS//ICD{int(row.icd_version)}//{row.icd_code}",
-               None, "diagnoses_icd", f"diagnoses_icd:{row.name}", hadm=hadm)
-
-    lab_items = set(pd.to_numeric(tables["d_labitems"]["itemid"], errors="coerce").dropna().astype("int64"))
-    lab_total = lab_matched = 0
-    for _, row in tables["labevents"].iterrows():
-        if pd.isna(row.itemid) or pd.isna(row.charttime):
-            ctx.add_issue("REQUIRED_FIELD", "warning", "labevents", "缺少 itemid 或 charttime，未输出",
-                          subject=int(row.subject_id), record=f"labevents:{row.name}")
-            continue
-        lab_total += 1
-        itemid = int(row.itemid)
-        if itemid in lab_items:
-            lab_matched += 1
-        else:
-            ctx.add_issue("CODE_NOT_IN_DICTIONARY", "warning", "labevents",
-                          f"itemid={itemid} 不在 d_labitems 中",
-                          subject=int(row.subject_id), record=f"labevents:{row.name}")
-        unit = "UNKNOWN" if pd.isna(row.valueuom) else (
-            re.sub(r"[^A-Za-z0-9%]+", "_", str(row.valueuom).strip()) or "UNKNOWN"
-        )
-        hadm = int(row.hadm_id) if pd.notna(row.hadm_id) else None
-        if hadm is not None and hadm not in admission_ids:
-            ctx.add_issue("OBJECT_ASSOCIATION", "error", "labevents",
-                          f"检验的 hadm_id={hadm} 不在住院对象中",
-                          subject=int(row.subject_id), record=f"labevents:{row.name}")
-        _event(ctx, row.subject_id, row.charttime, f"LAB//MIMIC_ITEM//{itemid}//{unit}",
-               None if pd.isna(row.valuenum) else float(row.valuenum),
-               "labevents", f"labevents:{row.name}", hadm=hadm)
-
-    med_total = 0
-    for _, row in tables["prescriptions"].iterrows():
-        if pd.isna(row.formulary_drug_cd) or not str(row.formulary_drug_cd).strip():
-            ctx.add_issue("CODE_MAPPING", "warning", "prescriptions",
-                          "缺少 formulary_drug_cd，未输出",
-                          subject=int(row.subject_id), record=f"prescriptions:{row.name}")
-            continue
-        med_total += 1
-        hadm = int(row.hadm_id) if pd.notna(row.hadm_id) else None
-        if hadm is not None and hadm not in admission_ids:
-            ctx.add_issue("OBJECT_ASSOCIATION", "error", "prescriptions",
-                          f"处方的 hadm_id={hadm} 不在住院对象中",
-                          subject=int(row.subject_id), record=f"prescriptions:{row.name}")
-        drug_code = re.sub(r"[^A-Za-z0-9_.\-]+", "_", str(row.formulary_drug_cd).strip())
-        _event(ctx, row.subject_id, pd.to_datetime(row.starttime, errors="coerce"),
-               f"MEDICATION//MIMIC_FORMULARY//{drug_code}", None, "prescriptions",
-               f"prescriptions:{row.name}", hadm=hadm)
+        counts[event_type] = {"rows": rows, "emitted": emitted, "dictionary_hits": hits}
 
     ctx.stats.update(
         {
-            "diagnosis_rows": dx_total,
-            "diagnosis_codes_in_dictionary": dx_matched,
-            "lab_rows": lab_total,
-            "lab_items_in_dictionary": lab_matched,
-            "prescription_rows": med_total,
+            "diagnosis_rows": counts.get("DIAGNOSIS", {}).get("rows", 0),
+            "diagnosis_codes_in_dictionary": counts.get("DIAGNOSIS", {}).get("dictionary_hits", 0),
+            "lab_rows": counts.get("LAB", {}).get("rows", 0),
+            "lab_items_in_dictionary": counts.get("LAB", {}).get("dictionary_hits", 0),
+            "prescription_rows": counts.get("MEDICATION", {}).get("emitted", 0),
             "structured_events": len(ctx.events),
+            "interface_events_by_type": {key: value["emitted"] for key, value in counts.items()},
         }
     )
 
@@ -294,29 +428,31 @@ def _extract_text(ctx: GovernanceContext) -> None:
         )
 
     objects = ctx.objects
+    note_spec = load_targets()["NOTE"]  # 文书事件的编码/时间/文本列同样来自接口声明
     note_events = 0
     note_records: list[dict] = []
     for _, row in notes.iterrows():
-        when = row["charttime"] if pd.notna(row["charttime"]) else row["storetime"]
+        when = _field_time(note_spec.fields["time"], row)
         hadm = int(row.hadm_id) if pd.notna(row.hadm_id) else None
         if hadm is not None and hadm not in objects["admission_ids"]:
             ctx.add_issue("OBJECT_ASSOCIATION", "error", "discharge",
                           f"出院小结的 hadm_id={hadm} 不在住院对象中",
                           subject=int(row.subject_id), record=f"discharge:{row.note_id}")
         text = "" if pd.isna(row["text"]) else str(row["text"])
+        note_text = _field_text(note_spec.fields["text_value"], row) or ""
         common = dict(
             subject_id=int(row.subject_id),
             time=when,
             hadm_id=hadm,
             stay_id=None,
-            source_table="discharge",
+            source_table=note_spec.table,
             source_record_id=f"discharge:{row.note_id}",
             mapping_version=MAPPING_VERSION,
-            extractor="note_rules:v1",
+            extractor=note_spec.extractor,
         )
         ctx.events.append(
-            {**common, "code": "NOTE//DISCHARGE", "numeric_value": None,
-             "text_value": text[:20_000], "assertion": "present"}
+            {**common, "code": note_spec.fields["code"].template, "numeric_value": None,
+             "text_value": note_text, "assertion": "present"}
         )
         note_events += 1
         diagnosis_lines: list[str] = []
@@ -382,22 +518,45 @@ def run(ctx: GovernanceContext) -> None:
         f"关联异常 {ctx.stats['bad_admission_windows'] + ctx.stats['bad_icu_windows']} 处。",
     )
 
-    _map_structured(ctx)
+    _emit_interface_events(ctx)
     ctx.log(
         "结构化事件映射",
-        f"诊断编码命中字典 {ctx.stats['diagnosis_codes_in_dictionary']}/{ctx.stats['diagnosis_rows']}，"
+        f"按接口声明产出 {len(ctx.events)} 条：诊断编码命中字典 "
+        f"{ctx.stats['diagnosis_codes_in_dictionary']}/{ctx.stats['diagnosis_rows']}，"
         f"检验项目命中 {ctx.stats['lab_items_in_dictionary']}/{ctx.stats['lab_rows']}，"
         f"处方 {ctx.stats['prescription_rows']} 行。",
     )
 
     _extract_text(ctx)
+    interface_check = check_events(ctx.events)
+    ctx.stats["meds_interface_check"] = interface_check
+    if interface_check["undeclared"]:
+        ctx.add_issue(
+            "INTERFACE_UNDECLARED_NAMESPACE",
+            "warning",
+            "events",
+            "事件流里出现接口未声明的编码命名空间："
+            + "、".join(interface_check["undeclared"]),
+        )
+    for item in interface_check["required_violations"]:
+        ctx.add_issue(
+            "INTERFACE_REQUIRED_MISSING",
+            "warning",
+            "events",
+            f"{item['event_type']}.{item['column']} 声明为必填，但 {item['null']}/{item['rows']} 行为空",
+        )
     ctx.log(
         "文本事件抽取",
         f"读取出院小结 {ctx.stats['notes_used']} 份（每名患者最多 "
         f"{ctx.settings.max_notes_per_subject} 份），生成 {ctx.stats['note_events']} 条 NOTE_* 事件；"
         f"使用确定性规则，未调用大模型。",
     )
-    ctx.log("组织与标准化", f"累计生成 {len(ctx.events)} 条候选事件。")
+    ctx.log(
+        "组织与标准化",
+        f"累计生成 {len(ctx.events)} 条候选事件；接口命名空间 "
+        f"{len(interface_check['observed_namespaces'])} 个，未声明 "
+        f"{len(interface_check['undeclared'])} 个，必填列空缺 {len(interface_check['required_violations'])} 处。",
+    )
 
 
 #: 出院小结必须具备的章节（缺失记 TEXT_SECTION_MISSING）

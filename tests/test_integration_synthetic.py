@@ -73,7 +73,10 @@ class PipelineIntegrationTest(unittest.TestCase):
         self.assertGreater(len(field_map), 0)
         self.assertIn("status", field_map.columns)
         self.assertTrue((mapping / "derived_fields.csv").exists())
-        self.assertEqual(len(meds_map), 45)
+        # 10 类事件 × 5 个 MEDS 核心字段（含 DEMOGRAPHIC；NOTE 的 3 个子命名空间不单列）
+        self.assertEqual(len(meds_map), 50)
+        self.assertIn("resolved_by", meds_map.columns)
+        self.assertIn("consumed", field_map.columns)
         self.assertEqual(len(record_map), 11 + 3)
         self.assertIn("derived:patient_360:", record_map["source_record_id"].iloc[-1])
 

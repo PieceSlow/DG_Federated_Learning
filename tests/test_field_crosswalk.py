@@ -1,4 +1,4 @@
-"""MEDS 字段交叉表测试：覆盖 9 类事件 × 5 个核心字段，且不引入自造聚合。"""
+"""MEDS 接口台账测试：10 类事件 × 5 个核心字段，且回填匹配结果、不引入自造聚合。"""
 
 from __future__ import annotations
 
@@ -15,7 +15,8 @@ class CrosswalkTest(unittest.TestCase):
         cls.targets = load_targets()
 
     def test_one_row_per_event_and_core_field(self) -> None:
-        self.assertEqual(len(self.targets), 9)
+        # 9 类结构化事件 + DEMOGRAPHIC（人门学锚定年龄，标准层确实会发）
+        self.assertEqual(len(self.targets), 10)
         self.assertEqual(len(self.frame), len(self.targets) * len(CORE_FIELDS))
         for event_type in self.targets:
             subset = self.frame[self.frame["event_type"] == event_type]
@@ -34,6 +35,36 @@ class CrosswalkTest(unittest.TestCase):
 
     def test_validate_crosswalk(self) -> None:
         validate_crosswalk(self.frame)
+
+    def test_declaration_covers_every_emitted_namespace(self) -> None:
+        """standardize 实际发出的命名空间必须都在声明里。"""
+        from governance.alignment.targets import declared_namespaces
+
+        namespaces = declared_namespaces(self.targets)
+        for expected in ("GENDER", "DEMOGRAPHIC", "ADMISSION", "DISCHARGE", "ICU_STAY",
+                         "ICU_DISCHARGE", "DIAGNOSIS", "LAB", "MEDICATION"):
+            self.assertIn(expected, namespaces)
+        for note_namespace in ("NOTE", "NOTE_SECTION", "NOTE_MEDICATION", "NOTE_DIAGNOSIS"):
+            self.assertIn(note_namespace, namespaces)
+
+    def test_mapping_rows_are_backfilled(self) -> None:
+        """没有匹配结果时不能凭空出现 mapping；给了匹配结果要能回填到源字段。"""
+        self.assertFalse((self.frame["resolved_by"] == "mapping").any())
+
+        import pandas as pd
+
+        field_map = pd.DataFrame(
+            [
+                {"target_table": "clinical_events", "target_field": "code",
+                 "source_table": "diagnoses_icd", "source_field": "icd_code",
+                 "score": 0.9, "status": "auto", "method": "matcher"},
+            ]
+        )
+        frame = build_meds_crosswalk(field_map=field_map)
+        row = frame[(frame["event_type"] == "DIAGNOSIS") & (frame["target_field"] == "code")].iloc[0]
+        self.assertEqual(row["resolved_by"], "mapping")
+        self.assertEqual(row["matched_source_field"], "icd_code")
+        self.assertEqual(row["mapping_status"], "auto")
 
 
 if __name__ == "__main__":

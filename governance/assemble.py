@@ -60,10 +60,17 @@ def _build_events(ctx: GovernanceContext) -> pd.DataFrame:
     dx_title = {(int(r.icd_version), str(r.icd_code)): r.long_title for _, r in d_dx.iterrows()}
     px_title = {(int(r.icd_version), str(r.icd_code)): r.long_title for _, r in d_px.iterrows()}
 
+    def _code(value: Any) -> str | None:
+        """缺失的编码写 NULL，不写 ''/"nan"：空串会让"没有编码"看起来像"有编码"。"""
+        if pd.isna(value):
+            return None
+        text = str(value).strip()
+        return text or None
+
     rows: list[dict[str, Any]] = []
     for _, r in diagnoses.iterrows():
         ver = int(r.icd_version)
-        code = str(r.icd_code)
+        code = _code(r.icd_code)
         rows.append(
             {
                 "record_id": f"DX:{int(r.subject_id)}:{int(r.hadm_id)}:ICD{ver}:{int(r.seq_num)}",
@@ -85,7 +92,7 @@ def _build_events(ctx: GovernanceContext) -> pd.DataFrame:
 
     for _, r in procedures.iterrows():
         ver = int(r.icd_version)
-        code = str(r.icd_code)
+        code = _code(r.icd_code)
         rows.append(
             {
                 "record_id": f"PX:{int(r.subject_id)}:{int(r.hadm_id)}:ICD{ver}:{int(r.seq_num)}",
@@ -107,11 +114,12 @@ def _build_events(ctx: GovernanceContext) -> pd.DataFrame:
 
     for _, r in prescriptions.iterrows():
         dose = pd.to_numeric(r.dose_val_rx, errors="coerce")
-        text = " ".join(
+        parts = [
             str(x).strip()
             for x in (r.dose_val_rx, r.dose_unit_rx, r.route)
             if pd.notna(x) and str(x).strip()
-        )
+        ]
+        text = " ".join(parts) if parts else None
         rows.append(
             {
                 "record_id": f"RX:{int(r.subject_id)}:{int(r.hadm_id)}:"
@@ -122,8 +130,8 @@ def _build_events(ctx: GovernanceContext) -> pd.DataFrame:
                 "event_type": "Prescription",
                 "event_time": pd.to_datetime(r.starttime, errors="coerce"),
                 "code_system": "MIMIC_FORMULARY",
-                "code": str(r.formulary_drug_cd).strip() if pd.notna(r.formulary_drug_cd) else "",
-                "display": str(r.drug).strip() if pd.notna(r.drug) else "",
+                "code": _code(r.formulary_drug_cd),
+                "display": _code(r.drug),
                 "numeric_value": float(dose) if pd.notna(dose) else None,
                 "text_value": text,
                 "icd_chapter": "N/A",

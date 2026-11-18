@@ -20,3 +20,26 @@ TRANSFORMS: dict[str, dict] = {
         ),
     }
 }
+
+
+def strict_real(expression: str) -> str:
+    """把文本列转成 REAL，口径与 ``pd.to_numeric(errors="coerce")`` 一致。
+
+    SQLite 的 ``CAST('25-50' AS REAL)`` 会得到 25 —— 把"25 到 50 的区间剂量"
+    悄悄变成"25"。这样的数值比空值更有害，所以这里显式判形状：
+
+    * 必须是数字（含 ``+/-``、小数点、指数）；
+    * ``+``/``-`` 只允许出现在首位（否则 ``25-50``、``3-10`` 会被误判成数字）；
+    * 最多一个小数点；
+    * 空串/空白/带单位的值一律 NULL。
+    """
+    value = f"TRIM({expression})"
+    return (
+        "CASE WHEN "
+        f"{value} = '' THEN NULL "
+        f"WHEN {value} GLOB '*[0-9]*' "
+        f"AND SUBSTR({value}, 2) NOT GLOB '*[+-]*' "
+        f"AND {value} NOT GLOB '*[^0-9.eE+-]*' "
+        f"AND LENGTH({value}) - LENGTH(REPLACE({value}, '.', '')) <= 1 "
+        f"THEN CAST({value} AS REAL) ELSE NULL END"
+    )

@@ -110,8 +110,23 @@ class SqlMappingDrivenTest(unittest.TestCase):
         self.assertIn("p.long_title AS display", self._section("Procedure"))
 
     def test_numeric_value_is_cast_from_mapping(self) -> None:
-        self.assertIn("CAST(t.dose_val_rx AS REAL) AS numeric_value",
-                      self._section("Prescription"))
+        section = self._section("Prescription")
+        self.assertIn("t.dose_val_rx", section)
+        self.assertIn("AS numeric_value", section)
+        # 区间剂量 "25-50" 必须落 NULL，而不是被 SQLite CAST 成 25
+        self.assertIn("CASE WHEN", section)
+
+    def test_range_dose_becomes_null(self) -> None:
+        import sqlite3
+
+        from governance.alignment.transform import strict_real
+
+        connection = sqlite3.connect(":memory:")
+        connection.execute("CREATE TABLE t (dose TEXT)")
+        connection.executemany("INSERT INTO t VALUES (?)", [("25-50",), ("5",), ("",)])
+        rows = [row[0] for row in connection.execute(f"SELECT {strict_real('t.dose')} FROM t")]
+        connection.close()
+        self.assertEqual(rows, [None, 5.0, None])
 
     def test_literal_wins_over_mapping(self) -> None:
         note = self._section("ClinicalNote")
@@ -129,7 +144,10 @@ class SqlMappingDrivenTest(unittest.TestCase):
         summary = self.usage["summary"]
         self.assertGreater(summary.get("mapping", 0), 0)
         self.assertGreater(summary.get("derived", 0), 0)
-        self.assertIn("ClinicalNote.stay_id", self.usage["missing"])
+        self.assertGreater(summary.get("postprocess", 0), 0)
+        # stay_id 由 ICU 时间窗挂接，不是"该事件没有这个字段"
+        self.assertIn("ClinicalNote.stay_id", self.usage["link_pending"])
+        self.assertNotIn("ClinicalNote.stay_id", self.usage["missing"])
         self.assertIn("diagnoses_icd.icd_code", self.usage["mapped_targets"])
 
     def test_without_field_map_everything_mapped_is_missing(self) -> None:

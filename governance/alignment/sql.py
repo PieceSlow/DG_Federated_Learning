@@ -26,7 +26,7 @@ from typing import Any
 
 import pandas as pd
 
-from governance.alignment.transform import TRANSFORMS
+from governance.alignment.transform import TRANSFORMS, strict_real
 
 #: 每个事件类型的"装配规范"：主表、JOIN、派生表达式、规范常量、一对多转换。
 #: 只放**结构**与**非映射**信息；具体取值来自字段映射。
@@ -181,20 +181,35 @@ def _resolve_from_mapping(
     table, field, _, _ = candidates[0]
     expression = f"{aliases[table]}.{field}"
     if target_field == "numeric_value":
-        expression = f"CAST({expression} AS REAL)"
+        # 与 assemble 的 pd.to_numeric(..., errors="coerce") 口径一致：
+        # "25-50" 这种区间剂量必须是 NULL，而不是 SQLite CAST 出来的 25
+        expression = strict_real(expression)
     return expression, f"mapping:{table}.{field}"
 
 
-def _global_derived(target_field: str, event_type: str, spec: dict[str, Any]) -> str | None:
+#: 不在本 SQL 内产出、由后处理补齐的列：``stay_id`` 是 ICU 时间窗挂接，
+#: ``split`` / ``icd_chapter`` 是事件后处理的派生列。它们既不等于"匹配失败"，
+#: 也不等于"该事件没有这个字段"，必须在台账里单独成类。
+LINK_COLUMNS: dict[str, str] = {"stay_id": "icu_window"}
+POSTPROCESS_COLUMNS: dict[str, str] = {
+    "split": "患者哈希划分（sha256）",
+    "icd_chapter": "按 ICD 编码映射章节",
+}
+
+
+def _global_derived(
+    target_field: str, event_type: str, spec: dict[str, Any]
+) -> tuple[str, str] | None:
     """由事件规范统一派生、不参与字段匹配的字段。"""
     if target_field == "event_type":
-        return f"'{event_type}'"
+        return f"'{event_type}'", "derived"
     if target_field == "source_table":
-        return f"'{spec['table']}'"
-    if target_field == "split":
-        return "NULL /* 由患者哈希划分，后处理计算 */"
-    if target_field == "icd_chapter":
-        return "NULL /* 由 ICD 编码后处理映射 */"
+        return f"'{spec['table']}'", "derived"
+    if target_field in POSTPROCESS_COLUMNS:
+        return (
+            f"NULL /* 后处理：{POSTPROCESS_COLUMNS[target_field]} */",
+            "postprocess",
+        )
     return None
 
 
@@ -224,7 +239,11 @@ def _expression(
 
     global_derived = _global_derived(target_field, event_type, spec)
     if global_derived is not None:
-        return global_derived, "derived"
+        return global_derived
+
+    if target_field in LINK_COLUMNS:
+        # 与 assemble 的 link_stay() 等价的后处理：按 [intime, outtime] 挂 ICU 停留
+        return f"NULL /* link：{LINK_COLUMNS[target_field]} */", f"link:{LINK_COLUMNS[target_field]}"
 
     return "NULL", "missing"
 
@@ -299,6 +318,22 @@ def build_sql_with_usage(
                 if origin == "missing"
             }
         ),
+        "link_pending": sorted(
+            {
+                f"{event}.{field}"
+                for event, origins in usage.items()
+                for field, origin in origins.items()
+                if origin.startswith("link:")
+            }
+        ),
+        "postprocess": sorted(
+            {
+                f"{event}.{field}"
+                for event, origins in usage.items()
+                for field, origin in origins.items()
+                if origin == "postprocess"
+            }
+        ),
     }
     return sql, report
 
@@ -321,33 +356,108 @@ def _load_table(connection: sqlite3.Connection, name: str, frame: pd.DataFrame) 
     connection.executemany(f'INSERT INTO "{name}" VALUES ({placeholders})', rows)
 
 
+#: 不参与逐列对账的来源：它们本来就不由这段 SQL 产出
+_NOT_PRODUCED = {"missing", "postprocess"}
+
+
+def _compared_fields(event_type: str, usage: dict[str, Any]) -> list[str]:
+    origins = (usage.get("by_event") or {}).get(event_type, {})
+    return [
+        field
+        for field in EVENT_FIELDS
+        if field != "event_type"  # 分组键，不作为计数列参与对账
+        and not origins.get(field, "missing") in _NOT_PRODUCED
+        and not str(origins.get(field, "")).startswith("link:")
+    ]
+
+
 def validate_sql(
     sql: str,
     tables: dict[str, pd.DataFrame],
     notes: pd.DataFrame,
-    expected_by_type: dict[str, int],
+    expected_by_type: dict[str, int] | pd.DataFrame,
+    expected_frame: pd.DataFrame | None = None,
+    usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """在内存 SQLite 里重跑生成的 SQL 并与事件表对账。
+
+    对账分两层：**逐类型行数**（结构是否一致）与**逐列非空数**（取值是否一致）。
+    只有行数对账时，``stay_id`` 这种"行数一样、整列是 NULL"的差异是测不出来的。
+    ``expected_by_type`` 既可以传计数字典（旧调用方），也可以传事件表本身。
+    """
     started = time.perf_counter()
+    if isinstance(expected_by_type, pd.DataFrame):
+        expected_frame = expected_frame if expected_frame is not None else expected_by_type
+        expected_by_type = {
+            str(key): int(value)
+            for key, value in expected_frame["event_type"].value_counts().items()
+        }
     connection = sqlite3.connect(":memory:")
     try:
         for name, frame in tables.items():
             _load_table(connection, name, frame)
         _load_table(connection, "discharge", notes)
         connection.executescript(sql)
-        frame = pd.read_sql_query("SELECT event_type, COUNT(*) AS n FROM clinical_events GROUP BY event_type", connection)
+        frame = pd.read_sql_query(
+            "SELECT event_type, COUNT(*) AS n FROM clinical_events GROUP BY event_type",
+            connection,
+        )
         actual = {str(row.event_type): int(row.n) for row in frame.itertuples()}
         actual_total = int(sum(actual.values()))
         expected_total = int(sum(expected_by_type.values()))
-        status = "ok" if actual == expected_by_type else "mismatch"
-        return {
-            "status": status,
+        report: dict[str, Any] = {
+            "status": "ok" if actual == expected_by_type else "mismatch",
             "rows": actual_total,
             "expected_rows": expected_total,
             "by_type": actual,
             "expected_by_type": expected_by_type,
-            "elapsed_s": round(time.perf_counter() - started, 2),
-            "note": "行数与类型分布用于对账；文本/NULL 语义差异见 SQL 注释。",
         }
+
+        if expected_frame is not None and usage:
+            compared: list[str] = []
+            mismatches: list[dict[str, Any]] = []
+            for event_type in usage.get("by_event", {}):
+                fields = _compared_fields(event_type, usage)
+                subset = expected_frame[expected_frame["event_type"] == event_type]
+                if subset.empty or not fields:
+                    continue
+                select = ", ".join(f'COUNT("{field}") AS "{field}"' for field in fields)
+                row = pd.read_sql_query(
+                    f"SELECT event_type, {select} FROM clinical_events "
+                    "WHERE event_type = ? GROUP BY event_type",
+                    connection,
+                    params=(event_type,),
+                )
+                if row.empty:
+                    continue
+                for field in fields:
+                    compared.append(f"{event_type}.{field}")
+                    sql_count = int(row[field].iat[0] or 0)
+                    expected_count = int(subset[field].notna().sum()) if field in subset else 0
+                    if sql_count != expected_count:
+                        mismatches.append(
+                            {
+                                "column": f"{event_type}.{field}",
+                                "sql": sql_count,
+                                "expected": expected_count,
+                            }
+                        )
+            report["columns_compared"] = len(compared)
+            report["column_mismatches"] = mismatches[:50]
+            if mismatches:
+                report["status"] = "mismatch"
+            report["not_produced_here"] = sorted(
+                {
+                    f"{event}.{field}"
+                    for event, origins in usage.get("by_event", {}).items()
+                    for field, origin in origins.items()
+                    if origin in _NOT_PRODUCED or str(origin).startswith("link:")
+                }
+            )
+
+        report["note"] = "行数 + 逐列非空数；本 SQL 不产出的列见 not_produced_here。"
+        report["elapsed_s"] = round(time.perf_counter() - started, 2)
+        return report
     except Exception as exc:  # noqa: BLE001 - 生成/执行失败要进报告
         return {
             "status": "error",

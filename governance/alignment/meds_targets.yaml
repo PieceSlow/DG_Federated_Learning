@@ -1,88 +1,232 @@
-# MEDS 接口目标（助教确定，可信）
-# 只列 MEDS 核心 5 列；event_type 决定来源上下文与编码模板。
-# 注意：这里没有 n_diagnosis / total_los_days 等自造聚合。
+# MEDS 对外接口的**唯一声明**（助教确定，可信）。
+#
+# 本文件同时被三处消费，任何一处不得再各自硬编码：
+#   1. `standardize` 按 `table / emit_if / code.template / time / numeric / text` 产出事件；
+#   2. `crosswalk` 用 `uses` 从 `field_level.csv`（schema matching 结果）回填落地字段；
+#   3. `interface.check_events` 用 `code_namespaces` 与 `required` 校验实际事件流。
+#
+# 列来源（`fields.*.source`）：
+#   spec    —— 由模板/常量生成（`template` + `uses` 指明模板吃哪些源列）；
+#   derived —— 直接取自源行（`column`，必要时 `via` 指明关联表，`only_if_null`/`max_chars` 约束）；
+#   mapping —— 必须由 schema matching 提供（本文件不写死源字段）；
+#   none    —— 该事件类型确实没有这一列（必须写明 note，评审时能追问）。
 version: "meds-0.4"
 interface: MEDS
+
+# 接口声明之外必须讲清楚的缺口：不写进来，评审时就会被当成"漏了"。
+source_gaps:
+  procedures_icd: >-
+    MIMIC 操作只在 clinical_events（Procedure 事件）里；MEDS 事件流目前不输出 PROCEDURE，
+    因为作业只要求 9 类事件。若要补，按 PROCEDURE//ICD{version}//{code} 加一个事件类型即可
+    （`source_tables: [procedures_icd]`，`time: chartdate`）。
+  note_sub_namespaces: >-
+    NOTE 事件另有 3 个由文书规则抽取的子命名空间（NOTE_SECTION / NOTE_MEDICATION /
+    NOTE_DIAGNOSIS），它们共用 NOTE 的 subject/time/hadm，不给单独事件类型。
+
 event_types:
   GENDER:
+    description: 性别（一次性事件）
     source_tables: [patients]
+    table: patients
+    emit_if: [gender]
+    code_namespaces: [GENDER]
+    keys: {subject_id: subject_id}
     fields:
-      subject_id: {required: true, source_hint: "patients.subject_id"}
-      time: {required: false, note: "性别事件没有时间"}
-      code: {required: true, template: "GENDER//{gender}", source_hint: "patients.gender"}
-      numeric_value: {required: false}
-      text_value: {required: false}
+      subject_id: {required: true, source: derived, column: subject_id}
+      time: {required: false, source: none, note: "性别事件没有发生时间"}
+      code:
+        required: true
+        source: spec
+        template: "GENDER//{gender}"
+        uses: ["patients.gender"]
+      numeric_value: {required: false, source: none, note: "性别没有数值"}
+      text_value: {required: false, source: none}
+
+  DEMOGRAPHIC:
+    description: 人口学锚定年龄（一次性事件）
+    source_tables: [patients]
+    table: patients
+    emit_if: [anchor_age]
+    code_namespaces: [DEMOGRAPHIC]
+    keys: {subject_id: subject_id}
+    fields:
+      subject_id: {required: true, source: derived, column: subject_id}
+      time: {required: false, source: none, note: "锚定年龄没有发生时间；时间轴看 anchor_year"}
+      code:
+        required: true
+        source: spec
+        template: "DEMOGRAPHIC//ANCHOR_AGE"
+      numeric_value: {required: false, source: derived, column: anchor_age}
+      text_value: {required: false, source: none}
 
   ADMISSION:
+    description: 住院开始
     source_tables: [admissions]
+    table: admissions
+    code_namespaces: [ADMISSION]
+    keys: {subject_id: subject_id, hadm_id: hadm_id}
     fields:
-      subject_id: {required: true, source_hint: "admissions.subject_id"}
-      time: {required: true, source_hint: "admissions.admittime"}
-      code: {required: true, template: "ADMISSION//{admission_type}"}
-      numeric_value: {required: false}
-      text_value: {required: false}
+      subject_id: {required: true, source: derived, column: subject_id}
+      time: {required: true, source: derived, column: admittime}
+      code:
+        required: true
+        source: spec
+        template: "ADMISSION//HOSPITAL"
+      numeric_value: {required: false, source: none}
+      text_value: {required: false, source: none}
 
   DISCHARGE:
+    description: 住院结束
     source_tables: [admissions]
+    table: admissions
+    emit_if: [dischtime]
+    code_namespaces: [DISCHARGE]
+    keys: {subject_id: subject_id, hadm_id: hadm_id}
     fields:
-      subject_id: {required: true, source_hint: "admissions.subject_id"}
-      time: {required: true, source_hint: "admissions.dischtime"}
-      code: {required: true, template: "DISCHARGE//{discharge_location}"}
-      numeric_value: {required: false}
-      text_value: {required: false}
+      subject_id: {required: true, source: derived, column: subject_id}
+      time: {required: true, source: derived, column: dischtime}
+      code:
+        required: true
+        source: spec
+        template: "DISCHARGE//HOSPITAL"
+      numeric_value: {required: false, source: none}
+      text_value: {required: false, source: none}
 
   ICU_STAY:
+    description: ICU 入科
     source_tables: [icustays]
+    table: icustays
+    emit_if: [intime]
+    code_namespaces: [ICU_STAY]
+    keys: {subject_id: subject_id, hadm_id: hadm_id, stay_id: stay_id}
     fields:
-      subject_id: {required: true, source_hint: "icustays.subject_id"}
-      time: {required: true, source_hint: "icustays.intime"}
-      code: {required: true, template: "ICU_STAY//{first_careunit}"}
-      numeric_value: {required: false}
-      text_value: {required: false}
+      subject_id: {required: true, source: derived, column: subject_id}
+      time: {required: true, source: derived, column: intime}
+      code:
+        required: true
+        source: spec
+        template: "ICU_STAY//{first_careunit:unit}"
+        uses: ["icustays.first_careunit"]
+      numeric_value: {required: false, source: none}
+      text_value: {required: false, source: none}
 
   ICU_DISCHARGE:
+    description: ICU 出科
     source_tables: [icustays]
+    table: icustays
+    emit_if: [outtime]
+    code_namespaces: [ICU_DISCHARGE]
+    keys: {subject_id: subject_id, hadm_id: hadm_id, stay_id: stay_id}
     fields:
-      subject_id: {required: true, source_hint: "icustays.subject_id"}
-      time: {required: true, source_hint: "icustays.outtime"}
-      code: {required: true, template: "ICU_DISCHARGE//HOSPITAL"}
-      numeric_value: {required: false}
-      text_value: {required: false}
+      subject_id: {required: true, source: derived, column: subject_id}
+      time: {required: true, source: derived, column: outtime}
+      code:
+        required: true
+        source: spec
+        template: "ICU_DISCHARGE//HOSPITAL"
+      numeric_value: {required: false, source: none}
+      text_value: {required: false, source: none}
 
   DIAGNOSIS:
+    description: 诊断（无发生时间，用住院时间兜底）
     source_tables: [diagnoses_icd, admissions, d_icd_diagnoses]
-    joins:
-      admissions: {on: hadm_id}
+    table: diagnoses_icd
+    join: {table: admissions, on_column: hadm_id, columns: [admittime]}
+    emit_if: [icd_code]
+    check_hadm: true
+    skip_issue: {rule: CODE_MAPPING, detail: "缺少 icd_code，未输出"}
+    dictionary: {table: d_icd_diagnoses, columns: [icd_version, icd_code]}
+    code_namespaces: [DIAGNOSIS]
+    keys: {subject_id: subject_id, hadm_id: hadm_id}
     fields:
-      subject_id: {required: true, source_hint: "diagnoses_icd.subject_id"}
-      time: {required: true, source_hint: "admissions.admittime"}
-      code: {required: true, template: "DIAGNOSIS//ICD{icd_version}//{icd_code}"}
-      numeric_value: {required: false}
-      text_value: {required: false, note: "MEDS 不要求诊断文本"}
+      subject_id: {required: true, source: derived, column: subject_id}
+      time:
+        required: true
+        source: derived
+        column: admittime
+        via: admissions
+        note: "诊断本身没有发生时间；这里取住院时间 admittime 兜底，不是诊断时刻"
+      code:
+        required: true
+        source: spec
+        template: "DIAGNOSIS//ICD{icd_version:int}//{icd_code}"
+        uses: ["diagnoses_icd.icd_version", "diagnoses_icd.icd_code"]
+      numeric_value: {required: false, source: none}
+      text_value: {required: false, source: none, note: "MEDS 不要求诊断文本"}
 
   LAB:
+    description: 检验结果（数值或文本，二者其一）
     source_tables: [labevents, d_labitems]
+    table: labevents
+    emit_if: [itemid, charttime]
+    check_hadm: true
+    skip_issue: {rule: REQUIRED_FIELD, detail: "缺少 itemid 或 charttime，未输出"}
+    dictionary: {table: d_labitems, columns: [itemid]}
+    code_namespaces: [LAB]
+    keys: {subject_id: subject_id, hadm_id: hadm_id}
     fields:
-      subject_id: {required: true, source_hint: "labevents.subject_id"}
-      time: {required: true, source_hint: "labevents.charttime"}
-      code: {required: true, template: "LAB//MIMIC_ITEM//{itemid}//{valueuom}"}
-      numeric_value: {required: true, source_hint: "labevents.valuenum"}
-      text_value: {required: false, source_hint: "labevents.value"}
+      subject_id: {required: true, source: derived, column: subject_id}
+      time: {required: true, source: derived, column: charttime}
+      code:
+        required: true
+        source: spec
+        template: "LAB//MIMIC_ITEM//{itemid:int}//{valueuom:unit}"
+        uses: ["labevents.itemid", "labevents.valueuom"]
+      numeric_value:
+        required: false
+        source: derived
+        column: valuenum
+        note: "约 12% 的检验项没有数值（只有文本结果），因此 required=false"
+      text_value:
+        required: false
+        source: none
+        note: "接入阶段只取 valuenum/valueuom/flag，未取自由文本 value；检验文本结果如需要再接入"
 
   MEDICATION:
+    description: 处方/用药
     source_tables: [prescriptions]
+    table: prescriptions
+    emit_if: [formulary_drug_cd]
+    check_hadm: true
+    skip_issue: {rule: CODE_MAPPING, detail: "缺少 formulary_drug_cd，未输出"}
+    code_namespaces: [MEDICATION]
+    keys: {subject_id: subject_id, hadm_id: hadm_id}
     fields:
-      subject_id: {required: true, source_hint: "prescriptions.subject_id"}
-      time: {required: true, source_hint: "prescriptions.starttime"}
-      code: {required: true, template: "MEDICATION//MIMIC_FORMULARY//{formulary_drug_cd}"}
-      numeric_value: {required: false, source_hint: "prescriptions.dose_val_rx"}
-      text_value: {required: false, source_hint: "prescriptions.drug"}
+      subject_id: {required: true, source: derived, column: subject_id}
+      time:
+        required: false
+        source: derived
+        column: starttime
+        note: "starttime 可能缺失（真实数据 0.04%）；事件仍挂 hadm_id，可按住院定位"
+      code:
+        required: true
+        source: spec
+        template: "MEDICATION//MIMIC_FORMULARY//{formulary_drug_cd:drug}"
+        uses: ["prescriptions.formulary_drug_cd"]
+      numeric_value: {required: false, source: derived, column: dose_val_rx}
+      text_value:
+        required: false
+        source: none
+        note: "药名是编码的描述而不是文本结果；剂量串在 clinical_events.text_value 里"
 
   NOTE:
+    description: 出院小结（规则抽取 4 个命名空间）
     source_tables: [discharge]
+    table: discharge
+    extractor: "note_rules:v1"
+    code_namespaces: [NOTE, NOTE_SECTION, NOTE_MEDICATION, NOTE_DIAGNOSIS]
+    keys: {subject_id: subject_id, hadm_id: hadm_id}
     fields:
-      subject_id: {required: true, source_hint: "discharge.subject_id"}
-      time: {required: true, source_hint: "discharge.charttime"}
-      code: {required: true, template: "NOTE//{note_type}"}
-      numeric_value: {required: false}
-      text_value: {required: true, source_hint: "discharge.text"}
+      subject_id: {required: true, source: derived, column: subject_id}
+      time: {required: true, source: derived, column: charttime, fallback: storetime}
+      code:
+        required: true
+        source: spec
+        template: "NOTE//DISCHARGE"
+        note: "起始事件编码；子命名空间由 extract_note_events 按规则产出"
+      numeric_value: {required: false, source: none}
+      text_value:
+        required: true
+        source: derived
+        column: text
+        max_chars: 20000

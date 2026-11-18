@@ -34,6 +34,7 @@ from governance.alignment import (
 from governance.alignment.agentic import align_with_agents
 from governance.alignment.crosswalk import build_meds_crosswalk, validate_crosswalk
 from governance.alignment.evaluate import coverage
+from governance.alignment.interface import interface_report
 from governance.alignment.schema import family_of
 from governance.alignment.sql import build_sql_with_usage, validate_sql
 from governance.context import GovernanceContext, require_state
@@ -58,6 +59,7 @@ FIELD_COLUMNS = [
     "table_rank",
     "method",
     "status",
+    "consumed",
     "evidence",
 ]
 
@@ -98,6 +100,25 @@ def _record_map(events: pd.DataFrame, p360: pd.DataFrame) -> pd.DataFrame:
     p360_map["dataset_table"] = "patient_360"
     p360_map["source_record_id"] = "derived:patient_360:" + p360_map["subject_id"].astype(str)
     return pd.concat([record_map, p360_map[record_map.columns]], ignore_index=True)
+
+
+def _consumed(field_map: pd.DataFrame, usage: dict) -> pd.Series:
+    """该映射行是否被 ``build_clinical_events.sql`` 使用（表 × 字段 × 目标字段）。"""
+    used: set[tuple[str, str]] = set()
+    for origins in (usage.get("by_event") or {}).values():
+        for target_field, origin in origins.items():
+            if str(origin).startswith("mapping:"):
+                used.add((str(target_field), str(origin).split(":", 1)[1]))
+    if field_map.empty:
+        return pd.Series([], dtype=bool)
+    return pd.Series(
+        [
+            (row.target_field, f"{row.source_table}.{row.source_field}") in used
+            for row in field_map.itertuples()
+        ],
+        index=field_map.index,
+        dtype=bool,
+    )
 
 
 def _status(score: float, rank: int, source_dtype: str, target_dtype: str, required: bool) -> str:
@@ -183,6 +204,7 @@ def run(ctx: GovernanceContext) -> None:
                     "table_rank": int(row.table_rank),
                     "method": str(row.method),
                     "status": status,
+                    "consumed": False,
                     "evidence": (
                         f"string={row.string_score:.2f};type={row.type_score:.2f};"
                         f"structure={row.structure_score:.2f};value={row.value_score:.2f}"
@@ -199,23 +221,44 @@ def run(ctx: GovernanceContext) -> None:
 
     dest = ctx.settings.governance / "mapping"
     dest.mkdir(parents=True, exist_ok=True)
+
+    # 先跑 SQL 生成：只有知道哪些映射被 SQL 用了，才能回填 consumed
+    try:
+        sql, sql_usage = build_sql_with_usage(field_map)
+        (dest / "build_clinical_events.sql").write_text(sql, encoding="utf-8")
+        sql_report = validate_sql(
+            sql,
+            ctx.tables,
+            note_text_frame(ctx),
+            ctx.clinical_events,
+            usage=sql_usage,
+        )
+        sql_report["mapping_usage"] = sql_usage
+    except Exception as exc:  # noqa: BLE001 - 生成失败进报告，不中断流水线
+        sql_report = {"status": "error", "error": str(exc)}
+        sql_usage = {"by_event": {}, "summary": {}}
+
+    field_map["consumed"] = _consumed(field_map, sql_usage)
     field_map.to_csv(dest / "field_level.csv", index=False, encoding="utf-8-sig")
     derived = _derived_fields()
     derived.to_csv(dest / "derived_fields.csv", index=False, encoding="utf-8-sig")
 
-    meds_crosswalk = build_meds_crosswalk()
+    # MEDS 接口台账：接口声明 × 匹配结果，而不是手写对照表
+    meds_crosswalk = build_meds_crosswalk(field_map=field_map)
     validate_crosswalk(meds_crosswalk)
     meds_crosswalk.to_csv(dest / "field_level_meds.csv", index=False, encoding="utf-8-sig")
+    interface = interface_report(field_map, events=ctx.events)
 
     (dest / "MAPPING.md").write_text(
         "# 字段映射说明\n\n"
-        "本目录的三套文件用途不同：\n\n"
+        "本目录的几套文件用途不同：\n\n"
         "* `field_level.csv`：**匹配结果**。由 name/type/structure/value 四个匹配器生成候选，"
-        "top-k 选择后给出 auto/review；不再有静态 33 条表。\n"
+        "按「目标字段 × 源表」top-k 选择后给出 auto/review；`consumed` 表示该行是否被"
+        "`build_clinical_events.sql` 使用。\n"
         "* `derived_fields.csv`：**派生/聚合字段**（record_id、event_type、patient_360 的 n_* 等），"
         "不参与源字段匹配，单独说明公式与输入。\n"
-        "* `field_level_meds.csv`：**MEDS 接口交叉表**，9 类事件 × 5 个核心字段，"
-        "用于检查对外接口字段是否有源字段可落。\n\n"
+        "* `field_level_meds.csv`：**MEDS 接口台账**，10 类事件 × 5 个核心字段；每行回填了"
+        "匹配到的源字段与 `resolved_by`（mapping/spec/derived/none/unmapped）。\n\n"
         "`record_level.parquet` 是记录级血缘；"
         "`field_level_auto.csv` / `field_level_agent.csv` 是匹配器/智能体的候选与对照。\n",
         encoding="utf-8",
@@ -234,17 +277,9 @@ def run(ctx: GovernanceContext) -> None:
             json.dumps(agent_info, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-    try:
-        sql, sql_usage = build_sql_with_usage(field_map)
-        (dest / "build_clinical_events.sql").write_text(sql, encoding="utf-8")
-        expected = {
-            str(key): int(value)
-            for key, value in ctx.clinical_events["event_type"].value_counts().items()
-        }
-        sql_report = validate_sql(sql, ctx.tables, note_text_frame(ctx), expected)
-        sql_report["mapping_usage"] = sql_usage
-    except Exception as exc:  # noqa: BLE001 - 生成失败进报告，不中断流水线
-        sql_report = {"status": "error", "error": str(exc)}
+    (ctx.settings.governance / "quality" / "meds_interface_report.json").write_text(
+        json.dumps(interface, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     (ctx.settings.governance / "quality" / "sql_execution_report.json").write_text(
         json.dumps(sql_report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -273,6 +308,14 @@ def run(ctx: GovernanceContext) -> None:
                 "agent": agent_info,
             },
             "sql_execution": sql_report,
+            "interface": {
+                "event_types": interface["event_types"],
+                "resolution": interface["resolution"],
+                "unmapped": interface["unmapped"],
+                "review": interface["review"],
+                "namespaces_undeclared": (interface.get("events") or {}).get("undeclared", []),
+                "required_violations": (interface.get("events") or {}).get("required_violations", []),
+            },
         }
     )
     ctx.log(
@@ -280,6 +323,9 @@ def run(ctx: GovernanceContext) -> None:
         f"schema matching：目标 {report['targets_total']} 个，覆盖 {report['targets_mapped']} 个"
         f"（{report['coverage']:.1%}），必填覆盖 {report['required_coverage']:.1%}；"
         f"auto {report['auto_mappings']} / review {report['review_mappings']}；"
-        f"派生字段 {len(derived)} 条；MEDS 交叉表 {len(meds_crosswalk)} 条；"
-        f"SQL 对账 {sql_report.get('status')}（{sql_report.get('rows', 0)} 行）。",
+        f"映射被 SQL 消费 {int(field_map['consumed'].sum())}/{len(field_map)} 条；"
+        f"MEDS 接口 {interface['event_types']} 类事件、落地 "
+        f"{interface['resolution']['mapping']} 列、未落地 {len(interface['unmapped'])} 列；"
+        f"SQL 对账 {sql_report.get('status')}（{sql_report.get('rows', 0)} 行，"
+        f"列差异 {len(sql_report.get('column_mismatches', []))} 处）。",
     )

@@ -23,7 +23,7 @@ import pyarrow as pa
 from governance.config import meds_src, require_meds_src
 
 #: 事件表映射版本；换映射规则时递增，便于区分历史产物
-MAPPING_VERSION = "mimic-iv-3.1-to-meds-v3"
+MAPPING_VERSION = "mimic-iv-3.1-to-meds-v4"
 
 #: 编码格式：首段大写命名空间，之后至少一个 ``//值`` 段
 CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]*(//[^/]+)+$")
