@@ -12,7 +12,8 @@
 > **红线**：仓库只提交代码与说明文档。`output/` 下的患者级/文本级派生数据受 PhysioNet
 > 协议约束，禁止提交、打包或外发，详见 [docs/07-数据与合规.md](docs/07-数据与合规.md)。
 
-> **新接手先读 [START_HERE.md](START_HERE.md)**。
+> **新接手先读 [START_HERE.md](START_HERE.md)**；策略变更看
+> [docs/11-变更记录与决策日志.md](docs/11-变更记录与决策日志.md)。
 
 > **2026-11-18 字段对齐重构**：删除 33 条静态映射。目标字段来自
 > `governance/alignment/target_schema.yaml`；候选由 name/type/structure/value 四个
