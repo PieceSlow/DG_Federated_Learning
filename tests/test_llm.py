@@ -10,13 +10,14 @@ from unittest import mock
 
 from governance.llm import (
     LLMConfig,
+    LLMError,
     LLMRequest,
     LLMUnavailable,
     build_service,
 )
 from governance.llm.budget import Budget, BudgetExceeded
 from governance.llm.cache import ResponseCache
-from governance.llm.client import LLMService
+from governance.llm.client import LLMService, _parse_json
 from governance.llm.mock import MockProvider
 from governance.llm.usage import UsageLog
 
@@ -103,6 +104,86 @@ class OffModeTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(LLMUnavailable):
                 build_service(LLMConfig(provider="api", api_key=None), Path(tmp))
+
+
+class SchemaInjectionTest(unittest.TestCase):
+    """prompt 声明的 output_schema 必须真的发给模型（否则小模型会自己编结构）。"""
+
+    SCHEMA = {
+        "type": "object",
+        "required": ["mappings"],
+        "properties": {"mappings": {"type": "array"}},
+    }
+
+    def _call(self, request: LLMRequest) -> dict:
+        reply = mock.Mock()
+        reply.raise_for_status.return_value = None
+        reply.json.return_value = {
+            "choices": [{"message": {"content": '{"mappings": []}'}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+        }
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "requests.post", return_value=reply
+        ) as post:
+            build_service(
+                LLMConfig(provider="api", api_key="test", base_url="http://127.0.0.1:11434/v1"),
+                Path(tmp),
+            ).complete(request)
+        return post.call_args.kwargs["json"]
+
+    def test_schema_is_appended_to_system_message(self) -> None:
+        body = self._call(
+            LLMRequest(prompt_id="aligner", system="你是对齐智能体", user="{}", schema=self.SCHEMA)
+        )
+        system = body["messages"][0]["content"]
+        self.assertIn("你是对齐智能体", system)
+        self.assertIn("JSON Schema", system)
+        self.assertIn('"mappings"', system)
+
+    def test_without_schema_system_message_is_unchanged(self) -> None:
+        body = self._call(LLMRequest(prompt_id="aligner", system="你是对齐智能体", user="{}"))
+        self.assertEqual(body["messages"][0]["content"], "你是对齐智能体")
+
+    def test_base_url_is_respected(self) -> None:
+        """指向本机 Ollama 的关键：base_url 必须生效。"""
+        reply = mock.Mock()
+        reply.raise_for_status.return_value = None
+        reply.json.return_value = {
+            "choices": [{"message": {"content": '{"ok": true}'}, "finish_reason": "stop"}],
+            "usage": {},
+        }
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "requests.post", return_value=reply
+        ) as post:
+            build_service(
+                LLMConfig(provider="api", api_key="test", base_url="http://127.0.0.1:11434/v1"),
+                Path(tmp),
+            ).complete(_request())
+        self.assertEqual(post.call_args.args[0], "http://127.0.0.1:11434/v1/chat/completions")
+
+
+class JsonParseFallbackTest(unittest.TestCase):
+    """小模型常在 JSON 前后加话或包围栏，解析要能吃下这些情况。"""
+
+    def test_plain_json(self) -> None:
+        self.assertEqual(_parse_json('{"a": 1}'), {"a": 1})
+
+    def test_code_fence(self) -> None:
+        self.assertEqual(_parse_json('```json\n{"a": 1}\n```'), {"a": 1})
+
+    def test_preamble_and_trailing_text(self) -> None:
+        self.assertEqual(_parse_json('好的，结果如下：{"a": 1} 以上。'), {"a": 1})
+
+    def test_multiline_fenced(self) -> None:
+        self.assertEqual(_parse_json('```\n{\n  "mappings": []\n}\n```'), {"mappings": []})
+
+    def test_no_json_raises(self) -> None:
+        with self.assertRaises(LLMError):
+            _parse_json("这里没有任何 JSON")
+
+    def test_non_object_raises(self) -> None:
+        with self.assertRaises(LLMError):
+            _parse_json("[1, 2, 3]")
 
 
 if __name__ == "__main__":

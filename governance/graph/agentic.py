@@ -44,9 +44,17 @@ def build_with_agents(
 
         def object_validator(result) -> bool:
             # 表存在、主键在列里、主键唯一——不通过则带 feedback 让模型重试
-            return not validate_proposals(
+            errors = validate_proposals(
                 result.artifacts["objects"], [], ctx.tables, notes
             )
+            if errors:
+                # 把具体驳回理由塞进 issues，Supervisor 才会把它作为 feedback 回传；
+                # 只返回 False 时模型只收到"未通过校验"，无法自我修正。
+                result.issues = [
+                    {"code": "INVALID_OBJECT", "detail": error} for error in errors
+                ]
+                return False
+            return True
 
         found = Supervisor(max_attempts=2).run(
             finder, {"schema_view": schema, "stats_view": stats}, validator=object_validator
@@ -58,9 +66,15 @@ def build_with_agents(
         extractor = RelationExtractorAgent(llm=ctx.llm, trace_writer=writer)
 
         def relation_validator(result) -> bool:
-            return not validate_proposals(
+            errors = validate_proposals(
                 objects, result.artifacts["relations"], ctx.tables, notes
             )
+            if errors:
+                result.issues = [
+                    {"code": "INVALID_RELATION", "detail": error} for error in errors
+                ]
+                return False
+            return True
 
         payload: dict[str, Any] = {"objects": objects, "schema_view": schema}
         extracted = Supervisor(max_attempts=2).run(

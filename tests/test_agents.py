@@ -25,6 +25,23 @@ from governance.agents.views import (
 from governance.llm import LLMConfig, LLMUnavailable, build_service
 
 
+class PromptSchemaTest(unittest.TestCase):
+    """YAML 1.1 会把 on 解析成布尔，schema 里的字段名必须原样保留。"""
+
+    def test_on_key_survives_yaml_loading(self) -> None:
+        prompt = load_prompt("relation_extractor")
+        props = prompt.output_schema["properties"]["relations"]["items"]["properties"]
+        self.assertIn("on", props)
+        self.assertNotIn("true", props)
+        self.assertNotIn('"true"', json.dumps(prompt.output_schema))
+
+    def test_other_schema_fields_intact(self) -> None:
+        prompt = load_prompt("aligner")
+        item = prompt.output_schema["properties"]["mappings"]["items"]
+        for field in ("target_table", "target_field", "source_table", "source_field"):
+            self.assertIn(field, item["properties"])
+
+
 class ViewGuardTest(unittest.TestCase):
     def test_forbidden_key_raises(self) -> None:
         with self.assertRaises(ValueError):

@@ -272,7 +272,8 @@ def run(ctx: GovernanceContext) -> None:
     (ctx.settings.governance / "quality" / "alignment_report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    if agent_selected is not None:
+    # 有智能体参与就记账：被驳回/报错的原因也要落盘，否则回退后无从排查
+    if agent_info.get("status") != "skipped":
         (ctx.settings.governance / "quality" / "alignment_agent_report.json").write_text(
             json.dumps(agent_info, ensure_ascii=False, indent=2), encoding="utf-8"
         )

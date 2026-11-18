@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -129,7 +130,7 @@ class ApiProvider:
         body: dict[str, Any] = {
             "model": config.model,
             "messages": [
-                {"role": "system", "content": request.system},
+                {"role": "system", "content": _system_with_schema(request)},
                 {"role": "user", "content": request.user},
             ],
             "temperature": request.temperature if request.temperature is not None else config.temperature,
@@ -176,7 +177,12 @@ class ApiProvider:
                     try:
                         return call(config.fallback_model)
                     except Exception as fallback_exc:  # noqa: BLE001
-                        last_error = fallback_exc
+                        # 两个原因都要留下：只报降级失败会掩盖"空内容/额度不够"这个真因
+                        last_error = LLMError(
+                            f"主模型返回空内容（finish_reason={exc.finish_reason}，"
+                            f"completion_tokens={exc.completion_tokens}），"
+                            f"降级到 {config.fallback_model} 也失败：{fallback_exc}"
+                        )
                 else:
                     last_error = LLMError(
                         "LLM 返回空内容"
@@ -195,13 +201,45 @@ class _EmptyContent(Exception):
         super().__init__(f"empty content (finish_reason={finish_reason})")
 
 
+def _system_with_schema(request: "LLMRequest") -> str:
+    """把 prompt 里声明的输出 schema 一并发给模型。
+
+    此前 ``LLMRequest.schema`` 只在缓存键里用到，模型其实看不到字段结构，
+    于是小模型会自己发挥（把 ``mappings`` 写成对象、漏字段）。显式给出 schema
+    能让同一个提示词在 qwen3 等模型上稳定产出契约结构。
+    """
+    if not request.schema:
+        return request.system
+    return (
+        request.system
+        + "\n\n输出必须严格符合下面的 JSON Schema（对象按 properties 给出，数组逐元素同构）：\n"
+        + json.dumps(request.schema, ensure_ascii=False, indent=2)
+    )
+
+
+_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.S)
+
+
 def _parse_json(text: str) -> dict[str, Any] | None:
+    """解析模型输出的 JSON。
+
+    小模型（含 qwen3）经常在 JSON 前后加一句话或包一层 ```json 围栏，
+    直接 ``json.loads`` 会失败并让整条 agent 链回退。这里先原样解析，
+    失败再去掉围栏、截取最外层 ``{...}`` 重试一次；仍失败才报错。
+    """
     if not text:
         return None
     try:
         parsed = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise LLMError(f"LLM 返回不是合法 JSON：{text[:200]}") from exc
+    except json.JSONDecodeError:
+        cleaned = _FENCE.sub("", text.strip())
+        start, end = cleaned.find("{"), cleaned.rfind("}")
+        if start < 0 or end <= start:
+            raise LLMError(f"LLM 返回不是合法 JSON：{text[:200]}")
+        try:
+            parsed = json.loads(cleaned[start : end + 1])
+        except json.JSONDecodeError as exc:
+            raise LLMError(f"LLM 返回不是合法 JSON：{text[:200]}") from exc
     if not isinstance(parsed, dict):
         raise LLMError("LLM 返回的 JSON 顶层必须是对象")
     return parsed
