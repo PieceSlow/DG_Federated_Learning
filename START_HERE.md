@@ -16,20 +16,19 @@
 3. [README.md](README.md)（流水线 12 阶段）；
 4. [docs/00-本地运行与密钥.md](docs/00-本地运行与密钥.md)（key、预算、小批量）。
 
-## 1. 可信 / 不可信
+## 1. 可信边界：有出处 / 本组自定 / 不引用
 
-| 来源 | 用途 |
-|---|---|
-| MIMIC-IV 原始表 + 数据字典 | ✅ 源数据 |
-| **MEDS 接口（助教确定）** | ✅ 目标接口 |
-| Lab4 任务文本 | ✅ 要求 |
-| `governance/alignment/target_schema.yaml` | ✅ 对象字段目标（8 个源字段） |
-| `governance/alignment/matchers.py` 等 | ✅ 候选生成、组合、选择 |
-| `mapping/field_level.csv` | ✅ 匹配结果（auto/review，无静态表） |
-| `mapping/derived_fields.csv` | ✅ 派生/聚合字段说明 |
-| `governance/alignment/meds_targets.yaml` | ✅ MEDS 接口唯一声明（驱动 `standardize`） |
-| `mapping/field_level_meds.csv` | ✅ MEDS 接口台账（50 行，带 `resolved_by`） |
-| `_archive/untrusted_20261116/` | ❌ 旧归档，不引用 |
+| 来源 | 用途 | 性质 |
+|---|---|---|
+| MIMIC-IV 原始表 + 数据字典 | 源数据 | 有出处 |
+| 助教提供的 MEDS 源码（`third_party/meds`，v0.4） | 列与目录布局 | 有出处（**不含事件清单**） |
+| Lab4 任务文本 | 任务要求 | 有出处 |
+| `meds_targets.yaml` 的 10 类事件清单 | 对外接口 | **本组自定**（见 `docs/09` §2.2） |
+| `target_schema.yaml` 的 8 个字段 | 对齐目标 | **本组自定** |
+| `matchers.py` / `select.py` | 候选生成与选择 | 本组实现 |
+| `field_level.csv` / `field_level_meds.csv` | 匹配结果、接口台账（50 行） | 本组产物 |
+| `derived_fields.csv` | 派生/聚合字段说明 | 本组产物 |
+| `_archive/untrusted_20261116/` | 旧归档 | ❌ 不引用 |
 
 - `output/` 行级产物不入库；
 - `align` 运行时生成 `field_level.csv`、`derived_fields.csv`、`field_level_meds.csv`；
