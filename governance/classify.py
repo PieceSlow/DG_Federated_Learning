@@ -9,9 +9,15 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+from datetime import datetime, timezone
+
 import pandas as pd
 
 from governance.context import GovernanceContext, require_state
+
+RULES_VERSION = "1.0"
 
 COLUMNS = [
     "category_id", "category", "object", "level", "basis",
@@ -80,6 +86,56 @@ def _result(ctx: GovernanceContext) -> pd.DataFrame:
     )
 
 
+def _rules_hash() -> str:
+    payload = json.dumps({"version": RULES_VERSION, "rules": RULES}, ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def _level_map(result: pd.DataFrame) -> dict[str, str]:
+    return {
+        f"{row.dataset_table}.{row.object}": str(row.level)
+        for row in result.itertuples()
+    }
+
+
+def diff_levels(previous: dict[str, str], current: dict[str, str]) -> dict:
+    """两次分级的差异：改了哪些、新增/移除哪些。"""
+    return {
+        "changed": {
+            key: [previous[key], current[key]]
+            for key in current
+            if key in previous and previous[key] != current[key]
+        },
+        "added": sorted(set(current) - set(previous)),
+        "removed": sorted(set(previous) - set(current)),
+    }
+
+
+def _write_level_history(dest, result: pd.DataFrame) -> dict:
+    """追加一行分级历史：时间、规则指纹、各级别、与上次的 diff。
+
+    只追加不覆盖，回答"什么时候、哪条、从什么级别变到什么级别"。
+    """
+    path = dest / "level_history.jsonl"
+    previous: dict[str, str] = {}
+    if path.exists():
+        lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if lines:
+            previous = dict(json.loads(lines[-1]).get("levels") or {})
+    current = _level_map(result)
+    record = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "rules_version": RULES_VERSION,
+        "rules_hash": _rules_hash(),
+        "levels": current,
+        "rows": {f"{row.dataset_table}.{row.object}": int(row.rows) for row in result.itertuples()},
+        "diff": diff_levels(previous, current),
+    }
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return record["diff"]
+
+
 def run(ctx: GovernanceContext) -> None:
     require_state(ctx, "clinical_events", "patient_360")
     rules = pd.DataFrame(RULES, columns=COLUMNS)
@@ -89,6 +145,7 @@ def run(ctx: GovernanceContext) -> None:
     dest.mkdir(parents=True, exist_ok=True)
     rules.to_csv(dest / "rules.csv", index=False, encoding="utf-8-sig")
     result.to_csv(dest / "result.csv", index=False, encoding="utf-8-sig")
+    diff = _write_level_history(dest, result)
 
     ctx.stats.update(
         {
@@ -97,8 +154,17 @@ def run(ctx: GovernanceContext) -> None:
             "levels_in_use": sorted(set(result["level"])),
         }
     )
+    changed = diff["changed"]
+    change_note = (
+        "；与上次一致"
+        if not changed and not diff["added"] and not diff["removed"]
+        else "；级别变更 "
+        + "、".join(f"{key}: {old}→{new}" for key, (old, new) in changed.items())
+        + (f"，新增 {len(diff['added'])} 项" if diff["added"] else "")
+    )
     ctx.log(
         "分类分级",
         f"{len(rules)} 条分类规则、{len(result)} 条落地结果；"
-        f"涉及级别 {', '.join(sorted(set(result['level'])))}。",
+        f"涉及级别 {', '.join(sorted(set(result['level'])))}"
+        f"{change_note}（历史见 classification/level_history.jsonl）。",
     )
