@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
-from governance.concept_key import concept_object_id
+from governance.concept_key import ConceptResolver, concept_object_id
 from governance.context import GovernanceContext, require_state
 from governance.labels import (
     ObjectLabelStore,
@@ -77,19 +77,23 @@ def _value_counts(series: pd.Series, top: int | None = None) -> dict[str, int]:
 
 
 def _concept_ids(events: pd.DataFrame, concept_map: pd.DataFrame | None) -> set[str]:
-    """概念对象主键：与图谱 Concept 节点用同一个函数生成。"""
+    """概念对象主键：与图谱 Concept 节点用**同一个解析器和同一个函数**生成。"""
     if events is None or events.empty:
         return set()
-    pairs = events[["code_system", "code"]].dropna().drop_duplicates()
+    resolver = ConceptResolver(concept_map)
+    columns = [name for name in ("event_type", "code_system", "code", "display") if name in events.columns]
+    pairs = events[columns].dropna(subset=["code_system", "code"]).drop_duplicates()
     pairs = pairs[pairs["code"].astype(str).str.strip() != ""]
-    cui_by_code: dict[tuple[str, str], str] = {}
-    if concept_map is not None and not concept_map.empty:
-        for row in concept_map.itertuples():
-            cui_by_code[(str(row.source_system), str(row.source_code))] = str(row.cui)
-    return {
-        concept_object_id(system, code, cui_by_code.get((str(system), str(code))))
-        for system, code in pairs.itertuples(index=False)
-    }
+    ids: set[str] = set()
+    for row in pairs.itertuples(index=False):
+        hit = resolver.resolve(
+            getattr(row, "event_type", ""),
+            row.code_system,
+            row.code,
+            getattr(row, "display", None),
+        )
+        ids.add(concept_object_id(row.code_system, row.code, hit.cui if hit else None))
+    return ids
 
 
 def _coverage(

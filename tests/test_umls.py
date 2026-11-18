@@ -218,10 +218,45 @@ class PipelineConceptTest(unittest.TestCase):
             manifest = json.loads(
                 (settings.governance / "graph" / "graph_manifest.json").read_text(encoding="utf-8")
             )
-            self.assertEqual(manifest["objects"]["Concept"], 5)
-            self.assertEqual(manifest["relations"]["diagnosis_concept"], 3)
-            self.assertEqual(manifest["relations"]["prescription_concept"], 1)
-            self.assertEqual(manifest["relations"]["procedure_concept"], 2)
+            # 命中 UMLS 的编码按 CUI 合并，没命中的编码也建编码级节点（兜底），
+            # 所以节点数 = CUI 节点 + 编码级节点，不再是"只保留映射成功的"。
+            nodes = pd.read_parquet(settings.governance / "graph" / "nodes.parquet")
+            concept_nodes = set(nodes.loc[nodes.object_type == "Concept", "object_id"])
+            self.assertEqual(manifest["objects"]["Concept"], len(concept_nodes))
+            self.assertTrue(any(node.startswith("Concept:C") for node in concept_nodes))
+            self.assertTrue(any(not node.startswith("Concept:C") for node in concept_nodes))
+            # 有编码的事件节点都要有概念边（命中 CUI 或编码级兜底），不再漏未映射的编码；
+            # 缺编码的处方（synthetic 里故意留了一条）本来就没有概念可连。
+            code_field = {
+                "Diagnosis": "icd_code",
+                "Prescription": "formulary_drug_cd",
+                "Procedure": "icd_code",
+            }
+            for object_type, relation in (
+                ("Diagnosis", "diagnosis_concept"),
+                ("Prescription", "prescription_concept"),
+                ("Procedure", "procedure_concept"),
+            ):
+                subset = nodes[nodes.object_type == object_type]
+                with_code = sum(
+                    1
+                    for raw_attributes in subset.attributes
+                    if json.loads(raw_attributes or "{}").get(code_field[object_type]) not in (None, "")
+                )
+                self.assertEqual(
+                    manifest["relations"][relation],
+                    with_code,
+                    msg=f"{relation} 应等于「有编码的 {object_type} 节点数」",
+                )
+
+            # 标签里的每个概念对象，除文书（概念表里没有）外，必须能在图谱里找到
+            object_labels = pd.read_parquet(
+                settings.governance / "labels" / "object_labels.parquet"
+            )
+            label_concepts = set(
+                object_labels.loc[object_labels.object_type == "Concept", "object_id"]
+            )
+            self.assertEqual(label_concepts - concept_nodes, {"Concept:MIMIC_NOTE:DISCHARGE"})
 
             labels = json.loads(
                 (settings.governance / "metadata" / "labels.json").read_text(encoding="utf-8")

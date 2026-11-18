@@ -17,7 +17,7 @@ from typing import Any, Mapping
 
 import pandas as pd
 
-from governance.concept_key import concept_object_id
+from governance.concept_key import ConceptResolver, concept_object_id
 from governance.graph.model import ObjectModel, ObjectSpec, RelationSpec, load_model
 from governance.icd import icd_chapter
 
@@ -111,44 +111,29 @@ def _edge_frame(
     return pd.DataFrame(records, columns=EDGE_COLUMNS)
 
 
-def _concept_key(object_type: str, attributes: dict[str, Any]) -> tuple[str, str] | None:
-    if object_type == "Diagnosis":
-        version = attributes.get("icd_version")
-        code = attributes.get("icd_code")
-        return (f"ICD{int(float(version))}", str(code)) if version and code else None
-    if object_type == "Procedure":
-        version = attributes.get("icd_version")
-        code = attributes.get("icd_code")
-        if not version or not code:
-            return None
-        system = "ICD10PCS" if int(float(version)) == 10 else "ICD9CM_PROC"
-        return system, str(code)
-    if object_type == "Prescription":
-        drug = attributes.get("drug")
-        return ("RXNORM", str(drug)) if drug else None
-    return None
+def _event_identity(
+    object_type: str, attributes: dict[str, Any]
+) -> tuple[str, str, str | None] | None:
+    """事件节点的 (编码体系, 编码, 药名)，编码体系**与 clinical_events 一致**。
 
-
-def _event_code_key(object_type: str, attributes: dict[str, Any]) -> tuple[str, str] | None:
-    """事件层的编码键，与 ``assemble`` 生成 ``code_system``/``code`` 的规则一致。
-
-    UMLS 的 ``_concept_key`` 用的是源词表 SAB（``ICD10PCS``/``RXNORM``），
-    和 ``clinical_events.code_system``（``ICD10``/``MIMIC_FORMULARY``）不是一回事；
-    没有 UMLS 时概念层必须按事件口径降级，否则又会造出第三套主键。
+    图谱与标签必须用同一套编码体系命名概念键：诊断/操作都是 ``ICD{version}``，
+    处方是 ``MIMIC_FORMULARY`` + 药品目录编码；药名单独带出来，供按药名映射 RXNORM。
     """
     if object_type in {"Diagnosis", "Procedure"}:
         version, code = attributes.get("icd_version"), attributes.get("icd_code")
         if version in (None, "") or not code:
             return None
-        return f"ICD{int(float(version))}", str(code)
+        return f"ICD{int(float(version))}", str(code), None
     if object_type == "Prescription":
         code = attributes.get("formulary_drug_cd")
-        return ("MIMIC_FORMULARY", str(code).strip()) if code not in (None, "") else None
+        if code in (None, "") or not str(code).strip():
+            return None
+        return "MIMIC_FORMULARY", str(code).strip(), attributes.get("drug")
     return None
 
 
-def _code_semantic_type(object_type: str, attributes: dict[str, Any]) -> str:
-    """无 UMLS 时的语义类型：诊断/操作降级为 ICD 章节，其余与事件 ``icd_chapter`` 兜底一致。"""
+def _fallback_semantic_type(object_type: str, attributes: dict[str, Any]) -> str:
+    """没命中 UMLS 时的语义类型：诊断/操作降级为 ICD 章节，其余给 N/A。"""
     if object_type in {"Diagnosis", "Procedure"}:
         version, code = attributes.get("icd_version"), attributes.get("icd_code")
         if version not in (None, "") and code:
@@ -163,26 +148,15 @@ def build_concept_layer(
 ) -> GraphData:
     """在已有图谱上追加 Concept 节点与三类概念边。
 
-    两种模式，都由**图谱里已有的事件节点**推导，保证"有边必有节点、有节点必可达"：
-
-    * **UMLS 模式**（``concept_map`` 非空）：概念节点按 CUI 合并，键为 ``Concept:{cui}``，
-      只收已归一的编码；
-    * **降级模式**（无 UMLS）：概念节点按事件编码建立，键为 ``Concept:{编码体系}:{编码}``，
-      语义类型降级为 ICD 章节。没有这一层，图谱就没有概念对象，而标签却会打出
-      L3 概念标签，两边对不上。
+    一条规则同时覆盖"有 UMLS"和"无 UMLS"：事件节点 → :class:`ConceptResolver`
+    解析 CUI；命中就用 CUI 合并（``Concept:{cui}``），未命中的编码**也建节点**，
+    退回编码级（``Concept:{编码体系}:{编码}``）。这样标签里的每个概念键在图谱上
+    都找得到，两边不会一半对不上。
 
     概念节点主键统一由 :func:`governance.concept_key.concept_object_id` 生成，
     **与标签阶段的 Concept 对象使用同一个函数**。
     """
-    umls = concept_map is not None and not concept_map.empty
-    index: dict[tuple[str, str], tuple[str, str, str, float, str]] = {}
-    if umls:
-        for row in concept_map.itertuples():
-            index[(str(row.source_system), str(row.source_code))] = (
-                str(row.cui), str(row.concept_name), str(row.sty),
-                float(row.confidence), str(row.method),
-            )
-
+    resolver = ConceptResolver(concept_map)
     records: dict[str, list[dict[str, Any]]] = {name: [] for name in CONCEPT_RELATIONS.values()}
     concept_meta: dict[str, dict[str, Any]] = {}
 
@@ -194,31 +168,29 @@ def build_concept_layer(
             attributes = json.loads(node.attributes or "{}")
         except json.JSONDecodeError:
             continue
-
-        if umls:
-            key = _concept_key(node.object_type, attributes)
-            if key is None:
-                continue
-            hit = index.get(key)
-            if hit is None:
-                continue
-            cui, name, sty, confidence, method = hit
-            evidence = f"concept_map:{key[0]}:{key[1]}:{method}"
-        else:
-            key = _event_code_key(node.object_type, attributes)
-            if key is None:
-                continue
-            cui, name = None, None
-            sty = _code_semantic_type(node.object_type, attributes)
-            confidence, method = 1.0, "code_key"
-            evidence = f"code_key:{key[0]}:{key[1]}"
-
-        object_id = concept_object_id(key[0], key[1], cui)
+        identity = _event_identity(node.object_type, attributes)
+        if identity is None:
+            continue
+        system, code, display = identity
+        hit = resolver.resolve(node.object_type, system, code, display)
+        cui = hit.cui if hit else None
+        object_id = concept_object_id(system, code, cui)
+        semantic_type = (
+            hit.sty.strip()
+            if hit is not None and hit.sty and hit.sty.strip()
+            else _fallback_semantic_type(node.object_type, attributes)
+        )
         meta = concept_meta.setdefault(
             object_id,
-            {"cui": cui, "name": name, "sty": sty, "codes": set()},
+            {
+                "cui": cui,
+                "name": hit.name if hit else None,
+                "sty": semantic_type,
+                "codes": set(),
+                "source_table": "concept_map" if hit else "clinical_events",
+            },
         )
-        meta["codes"].add(f"{key[0]}//{key[1]}")
+        meta["codes"].add(f"{system}//{code}")
         records[relation].append(
             {
                 "src_type": node.object_type,
@@ -226,8 +198,12 @@ def build_concept_layer(
                 "dst_type": "Concept",
                 "dst_id": object_id,
                 "relation": relation,
-                "evidence": evidence,
-                "confidence": confidence,
+                "evidence": (
+                    f"concept_map:{system}:{code}:{hit.method}"
+                    if hit
+                    else f"code_key:{system}:{code}"
+                ),
+                "confidence": hit.confidence if hit else 1.0,
             }
         )
 
@@ -248,7 +224,7 @@ def build_concept_layer(
                     },
                     ensure_ascii=False,
                 ),
-                "source_table": "concept_map" if umls else "clinical_events",
+                "source_table": meta["source_table"],
             }
             for object_id, meta in sorted(concept_meta.items())
         ],
@@ -259,20 +235,21 @@ def build_concept_layer(
         graph.edges[relation] = pd.DataFrame(rows, columns=EDGE_COLUMNS)
         graph.manifest["relations"][relation] = int(len(rows))
     graph.manifest["objects"]["Concept"] = int(len(concept_meta))
+    mapped = sum(1 for meta in concept_meta.values() if meta["source_table"] == "concept_map")
     specs = graph.manifest.setdefault("specs", {})
     specs["Concept"] = {
-        "keys": ["cui"] if umls else ["code_system", "code"],
+        "keys": ["cui"] if mapped == len(concept_meta) else ["cui", "code_system", "code"],
         "attributes": ["name", "sty", "codes"],
-        "source_table": "concept_map" if umls else "clinical_events",
+        "source_table": "concept_map" if mapped == len(concept_meta) else "concept_map + clinical_events",
         "sensitivity": "L1",
         "concept": (
             "UMLS 概念（跨中心语义对齐锚点）"
-            if umls
-            else "编码级概念（无 UMLS 时的降级节点，语义类型取 ICD 章节）"
+            if mapped == len(concept_meta)
+            else "UMLS 概念 + 编码级兜底（未命中 UMLS 的编码仍建节点，保证标签可 join）"
         ),
     }
     graph.manifest["note"] = graph.manifest.get("note", "") + (
-        " Concept 为 UMLS 派生对象。" if umls else " Concept 为编码级降级节点（无 UMLS）。"
+        f" Concept 为 UMLS 派生对象（CUI {mapped} 个，编码级兜底 {len(concept_meta) - mapped} 个）。"
     )
     return graph
 

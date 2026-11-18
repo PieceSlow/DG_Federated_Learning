@@ -28,7 +28,7 @@ from typing import Any
 import pandas as pd
 import yaml
 
-from governance.concept_key import concept_object_id
+from governance.concept_key import ConceptResolver, concept_object_id
 from governance.icd import icd_chapter
 
 DEFINITIONS_PATH = Path(__file__).resolve().parent / "definitions.yaml"
@@ -484,29 +484,48 @@ def _concept_frame(
     events: pd.DataFrame,
     concept_map: pd.DataFrame | None,
 ) -> pd.DataFrame:
-    concepts = events[["code_system", "code", "icd_chapter"]].dropna(
-        subset=["code_system", "code"]
-    ).drop_duplicates()
-    concepts["semantic_type"] = concepts["icd_chapter"].fillna("Unknown")
+    """一张概念对象表：每个 (事件类型, 编码体系, 编码) 一个概念身份。
 
-    if concept_map is not None and not concept_map.empty:
-        mapping = concept_map.rename(
-            columns={
-                "source_system": "code_system",
-                "source_code": "code",
-                "sty": "umls_sty",
+    解析统一交给 :class:`ConceptResolver`（图谱建概念层用的是同一个），
+    这样诊断/操作/处方都能落到 CUI 上；解析不到的编码保持编码级身份，
+    图谱也会为它建节点，两边不会再出现"标签有、图里没有"。
+    """
+    resolver = ConceptResolver(concept_map)
+    columns = [name for name in ("event_type", "code_system", "code", "display", "icd_chapter")
+               if name in events.columns]
+    pairs = events[columns].dropna(subset=["code_system", "code"]).drop_duplicates()
+    pairs = pairs[pairs["code"].astype(str).str.strip() != ""]
+
+    rows: list[dict[str, Any]] = []
+    for row in pairs.itertuples(index=False):
+        chapter = getattr(row, "icd_chapter", None)
+        if chapter is None or (isinstance(chapter, float) and pd.isna(chapter)):
+            chapter = "Unknown"
+        hit = resolver.resolve(
+            getattr(row, "event_type", ""),
+            row.code_system,
+            row.code,
+            getattr(row, "display", None),
+        )
+        semantic_type = (
+            hit.sty.strip()
+            if hit is not None and hit.sty and hit.sty.strip()
+            else str(chapter)
+        )
+        rows.append(
+            {
+                "code_system": row.code_system,
+                "code": row.code,
+                "icd_chapter": chapter,
+                "cui": hit.cui if hit else None,
+                "semantic_type": semantic_type,
             }
         )
-        keep = [column for column in ("code_system", "code", "cui", "umls_sty") if column in mapping.columns]
-        mapping = mapping[keep].drop_duplicates(["code_system", "code"])
-        concepts = concepts.merge(mapping, on=["code_system", "code"], how="left")
-        if "umls_sty" in concepts:
-            concepts["semantic_type"] = concepts["umls_sty"].fillna(concepts["icd_chapter"]).fillna("Unknown")
-    if "cui" not in concepts:
-        concepts["cui"] = None
+    concepts = pd.DataFrame(rows)
+    if concepts.empty:
+        return pd.DataFrame(columns=["code_system", "code", "icd_chapter", "cui", "semantic_type", "object_id"])
 
     # 主键与图谱 Concept 节点用同一个函数：有 CUI 用 CUI，否则用 编码体系:编码
-    concepts = concepts[concepts["code"].astype(str).str.strip() != ""]
     concepts["object_id"] = [
         concept_object_id(system, code, cui)
         for system, code, cui in zip(concepts["code_system"], concepts["code"], concepts["cui"])

@@ -1,6 +1,6 @@
 # START HERE · 交接说明
 
-> 2026-11-18 ｜ 交接时以 `git log -1` 为准 ｜ 测试：222 个通过
+> 2026-11-18 ｜ 交接时以 `git log -1` 为准 ｜ 测试：239 个通过
 >
 > 字段对齐已改为 **schema matching**：目标 schema + name/type/structure/value 四个匹配器
 > + 每个「目标字段 × 源表」top-k + 声明契约；**33 条静态映射表已删除**。
@@ -112,7 +112,8 @@ governance/
 
 `label` 依赖 `clinical_events` + `graph`：住院级计数读边表、`L4.comorbidity_burden`
 走两跳、Concept 主键与图谱节点统一（`concept_key.concept_object_id`）；
-不一致产出 `LABEL_GRAPH_MISMATCH`。无 UMLS 时图谱建编码级降级概念节点。
+不一致产出 `LABEL_GRAPH_MISMATCH`。概念层由 `ConceptResolver` 统一解析：命中 UMLS 用 CUI，
+未命中的编码建编码级兜底节点，标签与图谱能 join。
 
 可选增强（不阻塞交付）：语义匹配器（LLM，只发字段元数据）、1:1 约束的匈牙利算法、
 人工复核界面、跨源实体识别。
@@ -143,6 +144,6 @@ governance/
 - [x] KV 对象标签 + 标签字典 + 覆盖率
 - [x] MEDS 接口声明驱动 + 55 行接口台账（`unmapped` 0）
 - [x] `.env` / 20 元预算
-- [x] 222 测试通过
+- [x] 239 测试通过
 - [ ] 小批量真实数据端到端（API ≤20 元）
 - [ ] 100 人全量运行（需数据盘）

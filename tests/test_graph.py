@@ -312,12 +312,31 @@ class ConceptLayerTest(unittest.TestCase):
             set(missing.nodes["object_id"]), set(empty.nodes["object_id"])
         )
 
-    def test_unmapped_codes_are_ignored_in_umls_mode(self) -> None:
-        """有 UMLS 时只收已归一的编码，未归一的不造 CUI 节点。"""
+    def test_all_mapped_codes_become_cui_nodes(self) -> None:
+        """全部命中 UMLS 时，概念节点都是 CUI 级（同义词合并的锚点）。"""
         graph = build_concept_layer(build_graph(_tables(), _notes()), _concept_map())
         concepts = graph.nodes[graph.nodes.object_type == "Concept"]
         self.assertEqual(len(concepts), 3)
         self.assertTrue(all(str(item).startswith("Concept:C") for item in concepts.object_id))
+
+    def test_unmapped_code_gets_code_level_node(self) -> None:
+        """未命中 UMLS 的编码不再丢弃：建编码级节点，标签的概念键才能在图上找到。"""
+        tables = _tables()
+        tables["diagnoses_icd"] = pd.concat(
+            [tables["diagnoses_icd"], pd.DataFrame({
+                "subject_id": [1], "hadm_id": [11], "seq_num": [2],
+                "icd_code": ["ZZZ"], "icd_version": [10],
+            })],
+            ignore_index=True,
+        )
+        graph = build_concept_layer(build_graph(tables, _notes()), _concept_map())
+        concepts = graph.nodes[graph.nodes.object_type == "Concept"]
+        ids = set(concepts.object_id)
+        self.assertIn("Concept:ICD10:ZZZ", ids)
+        self.assertIn("Concept:C001", ids)
+        # 两个诊断节点各有一条概念边
+        self.assertEqual(graph.manifest["relations"]["diagnosis_concept"], 2)
+        self.assertEqual(verify(graph), [])
 
 
 if __name__ == "__main__":

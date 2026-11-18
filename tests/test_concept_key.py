@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from governance.concept_key import concept_object_id, has_concept_cui
+from governance.concept_key import ConceptResolver, concept_object_id, has_concept_cui
 from governance.graph.build import build_concept_layer, build_graph
 from governance.labels import compute_labels
 from tests.synthetic import write_synthetic_mimic
@@ -93,6 +93,65 @@ class LabelGraphKeyAlignmentTest(unittest.TestCase):
                 label_ids <= graph_ids,
                 msg=f"标签造出了图谱没有的概念对象: {sorted(label_ids - graph_ids)}",
             )
+
+
+class ResolverTest(unittest.TestCase):
+    """事件编码 → UMLS 概念：诊断/操作/处方各有各的体系名，必须统一到一处解析。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.map = pd.DataFrame(
+            [
+                {"source_system": "ICD10", "source_code": "I10", "cui": "C001",
+                 "concept_name": "Essential hypertension", "sty": "Disease or Syndrome",
+                 "confidence": 1.0, "method": "icd_exact"},
+                {"source_system": "ICD9", "source_code": "4019", "cui": "C001",
+                 "concept_name": "Essential hypertension", "sty": "Disease or Syndrome",
+                 "confidence": 1.0, "method": "icd_exact"},
+                {"source_system": "ICD10PCS", "source_code": "0BH17EZ", "cui": "C005",
+                 "concept_name": "Insertion of endotracheal airway",
+                 "sty": "Therapeutic or Preventive Procedure", "confidence": 1.0,
+                 "method": "procedure_exact"},
+                {"source_system": "ICD9CM_PROC", "source_code": "3893", "cui": "C006",
+                 "concept_name": "Venous catheterization",
+                 "sty": "Therapeutic or Preventive Procedure", "confidence": 1.0,
+                 "method": "procedure_exact"},
+                {"source_system": "RXNORM", "source_code": "Aspirin", "cui": "C003",
+                 "concept_name": "Aspirin", "sty": "Pharmacologic Substance",
+                 "confidence": 1.0, "method": "term_exact"},
+            ]
+        )
+
+    def test_diagnosis_uses_icd_version_system(self) -> None:
+        resolver = ConceptResolver(self.map)
+        self.assertEqual(resolver.resolve("Diagnosis", "ICD10", "I10").cui, "C001")
+        self.assertEqual(resolver.resolve("Diagnosis", "ICD9", "4019").cui, "C001")
+
+    def test_procedure_uses_pcs_system(self) -> None:
+        """事件里操作也叫 ICD10/ICD9，但概念表里是 ICD10PCS/ICD9CM_PROC。"""
+        resolver = ConceptResolver(self.map)
+        self.assertEqual(resolver.resolve("Procedure", "ICD10", "0BH17EZ").cui, "C005")
+        self.assertEqual(resolver.resolve("Procedure", "ICD9", "3893").cui, "C006")
+
+    def test_prescription_falls_back_to_drug_name(self) -> None:
+        resolver = ConceptResolver(self.map)
+        self.assertEqual(
+            resolver.resolve("Prescription", "MIMIC_FORMULARY", "ASPIRIN", "Aspirin").cui,
+            "C003",
+        )
+        self.assertIsNone(
+            resolver.resolve("Prescription", "MIMIC_FORMULARY", "NOT_A_CODE", "Not a drug")
+        )
+
+    def test_unmapped_returns_none(self) -> None:
+        resolver = ConceptResolver(self.map)
+        self.assertIsNone(resolver.resolve("Diagnosis", "ICD10", "ZZZ"))
+        self.assertIsNone(resolver.resolve("ClinicalNote", "MIMIC_NOTE", "DISCHARGE"))
+
+    def test_empty_map_disables_resolution(self) -> None:
+        resolver = ConceptResolver(None)
+        self.assertFalse(resolver.enabled)
+        self.assertIsNone(resolver.resolve("Diagnosis", "ICD10", "I10"))
 
 
 if __name__ == "__main__":
