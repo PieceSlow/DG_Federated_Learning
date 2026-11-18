@@ -1,8 +1,9 @@
 # START HERE · 交接说明
 
-> 2026-11-16 ｜ 交接时以 `git log -1` 为准 ｜ 测试：168 个通过
+> 2026-11-18 ｜ 交接时以 `git log -1` 为准 ｜ 测试：175 个通过
 >
-> 这个仓库**可以继续开发**，但先记住一句话：**旧 33 字段对齐是中间产物，不是任务结论。**
+> 字段对齐已改为 **schema matching**：目标 schema + name/type/structure/value 四个匹配器
+> + top-k + 约束；**33 条静态映射表已删除**。
 
 ## 0. 先读什么
 
@@ -18,18 +19,20 @@
 | MIMIC-IV 原始表 + 数据字典 | ✅ 源数据 |
 | **MEDS 接口（助教确定）** | ✅ 目标接口 |
 | Lab4 任务文本 | ✅ 要求 |
-| `governance/alignment/meds_targets.yaml` | ✅ 新目标配置 |
-| `clinical_events` / `patient_360` / 33 条映射 | ❌ 旧设计，已隔离 |
-| `_archive/untrusted_20261116/` | ❌ 不要引用 |
+| `governance/alignment/target_schema.yaml` | ✅ 对象字段目标（8 个源字段） |
+| `governance/alignment/matchers.py` 等 | ✅ 候选生成、组合、选择 |
+| `mapping/field_level.csv` | ✅ 匹配结果（auto/review，无静态表） |
+| `mapping/derived_fields.csv` | ✅ 派生/聚合字段说明 |
+| `mapping/field_level_meds.csv` | ✅ MEDS 接口交叉表 |
+| `_archive/untrusted_20261116/` | ❌ 旧归档，不引用 |
 
-- 旧产物已移到仓库外 `_archive/untrusted_20261116/`；
-- `output/` 当前只有 UMLS 缓存；
-- 运行旧 `align` 仍会写 legacy 文件，目录里有 `LEGACY.md`，不要当结论。
+- `output/` 行级产物不入库；
+- `align` 运行时生成 `field_level.csv`、`derived_fields.csv`、`field_level_meds.csv`；
+  不再有 `LEGACY.md` 或 33 条静态表。
 
 ## 2. 5 分钟跑起来
 
 ```powershell
-cd code_repo
 python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
 
@@ -43,7 +46,6 @@ python -m venv .venv
 数据目录要求：`--mimic-root` 下有 `hosp/`、`icu/`；`--note-root` 下有 `note/discharge.csv.gz`。
 
 > **数据与密钥不随仓库转发**：MIMIC-IV 需要 PhysioNet 认证，UMLS 需要许可证，API key 需要接手人自己的。
-> 不要把 `_mimic_data/`、`output/`、`.env` 打包发给别人。
 
 ### API key（只放本地）
 
@@ -61,42 +63,41 @@ notepad .env      # 填 DEEPSEEK_API_KEY=sk-...
 ```text
 governance/
 ├── ingest / standardize / quality / materialize   # ✅ 可信主干，MEDS eventstore
-├── assemble                                       # ⚠️ legacy：clinical_events / patient_360
-├── align                                          # ❌ legacy：33 字段，待 P1-1d 替换
+├── assemble                                       # ✅ 资源数据集：clinical_events / patient_360
+├── align                                          # ✅ schema matching：目标 schema + 匹配器 + top-k + 约束
 ├── concept / objectify / label / classify / catalog / report  # ✅ 治理资产
 ├── alignment/
-│   ├── meds_targets.yaml   # ✅ 新目标接口（MEDS 核心 5 列）
-│   ├── targets.py          # ✅ 加载/校验
-│   ├── matchers/combine/select/agentic  # ⚠️ 旧 33 字段实现，待重写
+│   ├── target_schema.yaml  # ✅ 对象字段目标（仅源字段直接提供的 8 个字段）
+│   ├── target_schema.py    # ✅ 加载目标与允许的源表
+│   ├── matchers.py         # ✅ name/type/structure/value 四个匹配器
+│   ├── combine.py          # ✅ 加权组合
+│   ├── select.py           # ✅ 候选 top-k + 类型过滤
+│   ├── evaluate.py         # ✅ 覆盖率（无 gold）
+│   ├── crosswalk.py        # ✅ MEDS 9×5 交叉表
+│   ├── derived_fields.yaml # ✅ 派生/聚合字段（不参与匹配）
+│   └── meds_targets.yaml   # ✅ MEDS 接口（对外）
 └── llm/                    # ✅ key/预算/缓存/trace
 ```
 
-## 4. 下一项任务：P1-1d（从这里继续）
+## 4. 字段对齐现状
 
-目标：把 `align` 从“33 字段 + 4 个函数”换成“MEDS 目标 + 匹配器 Agent + 组合器 + 约束执行器 + 选择器”。
+已实现：
 
-建议顺序：
+1. `target_schema.yaml` 定义 8 个由源字段直接提供的目标字段（subject_id、hadm_id、
+   stay_id、event_time、code、display、numeric_value、text_value），并限定允许的源表；
+2. 四个匹配器出分 → 加权组合 → 每个目标保留 top-3、阈值 0.5、类型过滤；
+3. `field_level.csv` 输出 `auto` / `review`，`derived_fields.csv` 单独记录
+   record_id/event_type/patient_360 聚合等**不参与匹配**的字段；
+4. 覆盖率报告：目标覆盖、必填覆盖、auto/review 数量、缺失必填项；
+5. 没有 33 条 gold，也不再计算 precision/recall。
 
-1. 新建 `governance/alignment/matchers/`：
-   - `base.py`：`MatcherAgent` 协议（role/inputs/outputs/run/trace/matrix）；
-   - `name.py`、`type.py`、`structure.py`、`stats.py`；
-   - `semantic.py`：LLM 语义匹配器（只发字段元数据）。
-2. `matrix.py`：把各 matcher 的 `(target, source, score)` 对齐成同一张长表。
-3. `combiner.py`：权重 + 一致性（`alignment/weights.yaml`）；预留训练接口。
-4. `constraints.py`：1:1（匈牙利/贪心）、1:N 转换登记、类型/必填校验。
-5. `selector.py`：粗筛 top-k → 精排（组合分 + 一致性）→ 定结果。
-6. 改 `align.py`：从 `meds_targets.yaml` 读目标，不再调用 `_field_map()`；
-   事件类型决定源表上下文（诊断/检验/用药/文书…）。
-7. 验收：
-   - `--llm off` 可跑，输出 MEDS 字段覆盖率；
-   - `--llm mock` 有 matcher/verifier trace；
-   - `--llm api --llm-budget-cny 20` 小批量 ≤20 元；
-   - 不再引用 33 条 / `patient_360`。
+可选增强（不阻塞交付）：语义匹配器（LLM，只发字段元数据）、1:1 约束的匈牙利算法、
+人工复核界面。
 
 ## 5. 不要做
 
-- 不要把 33 条映射、`field_level_reference.csv` 当 gold；
-- 不要把 `patient_360` 的 `n_*`、`total_los_days` 放进匹配目标（它们是标签/特征）；
+- 不要再加静态字段映射表当“对齐结果”；
+- 不要把 `patient_360` 的 `n_*`、`total_los_days` 放进匹配目标（它们是派生/聚合）；
 - 不要把行级数据、ID、时间、文本发给 LLM；
 - 不要提交 `.env`、`output/`、`_mimic_data/`、UMLS 原始文件；
 - 不要把 mock 的结果说成“大模型已建好图谱”。
@@ -104,19 +105,18 @@ governance/
 ## 6. 已知坑
 
 1. `standardize.py` 的 MEDS 映射仍是硬编码，尚未由 matcher 生成；
-2. `assemble.py` / `catalog.py` 仍依赖 `patient_360`；
-3. `docs/附录-实验交付对照.md` 仍是旧口径，P1-1d 后重写；
+2. `catalog.py` 仍引用 `patient_360`（资源视图）；
+3. `docs/04` / `docs/05` 已按新口径更新，若发现旧措辞以 `docs/09` 为准；
 4. Windows 控制台编码：预算提示已改用 `CNY`，不要再引入 `¥` 到 `print`；
 5. 真实 API 只做过一次 tiny smoke，不代表模型质量；
 6. `_archive/untrusted_20261116/` 可删，但删前确认没有要对照的内容。
 
 ## 7. 交接检查
 
-- [x] 旧产物隔离
+- [x] schema matching（无 33 条静态表）
+- [x] KV 对象标签 + 标签字典 + 覆盖率
+- [x] MEDS 9×5 交叉表
 - [x] `.env` / 20 元预算
-- [x] MEDS 目标接口配置
-- [x] 168 测试通过
-- [x] API 连通性 smoke
-- [ ] 匹配器 Agent + 组合器 + 约束 + 选择器（P1-1d）
-- [ ] 小批量 MEDS 端到端
-- [ ] legacy 文档全量替换
+- [x] 175 测试通过
+- [ ] 小批量真实数据端到端（API ≤20 元）
+- [ ] 100 人全量运行（需数据盘）

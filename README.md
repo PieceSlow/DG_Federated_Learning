@@ -14,10 +14,10 @@
 
 > **新接手先读 [START_HERE.md](START_HERE.md)**。
 
-> **2026-11-16 重构**：旧 `clinical_events` / `patient_360` / 33 条字段映射已被判定为
-> 中间设计，归档到 `_archive/untrusted_20261116/`，不再作为对齐目标或评测依据。
-> 字段对齐目标改为 **MEDS 接口**（`governance/alignment/meds_targets.yaml`）；
-> 自造聚合（`n_diagnosis`、`total_los_days` 等）归入标签层。
+> **2026-11-18 字段对齐重构**：删除 33 条静态映射。目标字段来自
+> `governance/alignment/target_schema.yaml`；候选由 name/type/structure/value 四个
+> 匹配器生成，top-k 选择后输出 `field_level.csv`（auto/review）。
+> 派生/聚合字段单独放 `derived_fields.csv`；`field_level_meds.csv` 仍是 MEDS 接口交叉表。
 
 ---
 
@@ -29,11 +29,11 @@
 | 02 | 组织与标准化 | 对象索引、跨表关联、事件映射、出院小结文本抽取 | 队列与事件（内存） |
 | 03 | 质量校验 | 编码/关联/时间/重复校验 + MEDS 核心 schema | `quality/issues.csv` |
 | 04 | 事件仓储 | 按 MEDS 目录落盘，写盘后重新读回再校验 | `eventstore/` |
-| 05 | 多源汇聚 | 旧分析视图（legacy） | `dataset/*.parquet`（不作匹配目标） |
-| 06 | 字段对齐 | 目标接口 = **MEDS**（旧 33 字段已弃用）；匹配器/组合器/约束/选择器重构中 | `mapping/*`、`build_clinical_events.sql` |
+| 05 | 多源汇聚 | 统一事件表 + 患者 360 资源视图 | `dataset/*.parquet` |
+| 06 | 字段对齐 | schema matching：目标 schema + 四个匹配器 + top-k + 约束；无静态映射表 | `mapping/field_level.csv`、`derived_fields.csv`、`field_level_meds.csv` |
 | 07 | 概念归一 | UMLS 编码/药名/检验名 → 概念（CUI）与语义类型 | `concept_map.parquet`、`concept_coverage.json` |
 | 08 | 对象化 | 智能体提案对象/关系 → 本地实例化（可回退确定性模型）+ 图谱自检 | `graph/nodes.parquet`、`graph/edges/*`、`object_graph.json` |
-| 09 | 标签化 | 6 个技术维度 + 对象级业务标签（事实/派生/画像/手动） | `labels.json`、`labels/object_labels.parquet` |
+| 09 | 标签化 | KV 对象标签 L1–L4 + 标签字典 + 覆盖率 | `labels/object_labels.parquet`、`labels/tag_dictionary.csv`、`labels.json` |
 | 10 | 分类分级 | 7 条分级规则 + 落地结果 | `classification/*.csv` |
 | 11 | 编目 | 资源/资产/服务/共享/开放五级目录 | `data_catalog.json/.md` |
 | 12 | 报告 | 事件流与治理后数据集的质量汇总 | `quality/*.json`、`run_summary.json` |
@@ -156,17 +156,18 @@ output/
 │   ├── data/events.parquet
 │   └── metadata/{codes.parquet, subject_splits.parquet, dataset.json}
 ├── governance/                       # 治理资产
-│   ├── dataset/{clinical_events.parquet, patient_360.parquet}   # legacy 分析视图
-│   ├── mapping/{field_level.csv, field_level_reference.csv, field_level_auto.csv,   # legacy
-│   │             field_level_agent.csv, record_level.parquet,
+│   ├── dataset/{clinical_events.parquet, patient_360.parquet}   # 资源数据集
+│   ├── mapping/{field_level.csv, derived_fields.csv, field_level_meds.csv,
+│   │             field_level_auto.csv, field_level_agent.csv, record_level.parquet,
 │   │             match_candidates.parquet, build_clinical_events.sql}
 │   ├── graph/{nodes.parquet, edges/*.parquet, graph_manifest.json, graph_history.jsonl}
 │   ├── metadata/{data_source_inventory.csv, object_graph.json,
 │   │             object_inventory.csv, labels.json}
-│   ├── labels/object_labels.parquet   # 对象级标签（object_type/object_id/key/value）
+│   ├── labels/{object_labels.parquet, tag_dictionary.csv}   # KV 标签（L1–L4）
 │   ├── quality/{issues.csv, event_stream.json, governed_dataset.json,
 │   │             concept_coverage.json, alignment_report.json,
-│   │             sql_execution_report.json, alignment_agent_report.json}
+│   │             sql_execution_report.json, alignment_agent_report.json,
+│   │             label_coverage.json}
 │   ├── classification/{rules.csv, result.csv}
 │   ├── metadata/concept_map.parquet          # 编码 → UMLS CUI
 │   └── quality/concept_coverage.json         # 概念覆盖率
@@ -201,7 +202,7 @@ output/
 | MEDS 事件 | 147,640 条、3,558 个编码 |
 | 统一事件表 | 24,554 行（处方 18,384 / 诊断 5,319 / 操作 696 / 文书 155） |
 | 患者 360 | 100 行 |
-| 记录级 / 字段级映射 | 24,654 条 / 33 条 |
+| 记录级 / 字段级映射 | 24,654 条 / 8 个目标字段（匹配结果 + review） |
 | 质量告警 | 158 条（119 时间越界、22 重复、17 缺药品编码），error 0 |
 | 运行时间 | 约 3 分钟（读 9s、映射 90s、写盘 48s、治理阶段约 25s） |
 
@@ -266,6 +267,7 @@ M1 包含：
 | [docs/03-质量校验与事件仓储.md](docs/03-质量校验与事件仓储.md) | 校验规则、MEDS 落盘、读回复验 |
 | [START_HERE.md](START_HERE.md) | 交接入口：可信边界、5 分钟运行、P1-1d 任务 |
 | [docs/09-状态与下一阶段.md](docs/09-状态与下一阶段.md) | 完整交付状态、路线图、已知问题 |
+| [docs/10-字段对齐与标签最终口径.md](docs/10-字段对齐与标签最终口径.md) | schema matching、派生字段、KV 标签与验收 |
 | [docs/00-本地运行与密钥.md](docs/00-本地运行与密钥.md) | `.env`、API key、20 元预算、小批量实验 |
 | [docs/04-汇聚与对齐.md](docs/04-汇聚与对齐.md) | 事件表与患者 360、字段级/记录级映射（待按 MEDS 目标重构） |
 | [docs/05-对象化与标签化.md](docs/05-对象化与标签化.md) | 对象模型、对象图谱、标签体系 |
