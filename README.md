@@ -18,10 +18,18 @@
 > `governance/alignment/target_schema.yaml`；候选由 name/type/structure/value 四个
 > 匹配器生成，**每个「目标字段 × 源表」**保留 top-k，`source_fields` 是声明契约
 > （声明过的字段不被阈值否掉），输出 `field_level.csv`（auto/review + method）。
-> 派生/聚合字段单独放 `derived_fields.csv`；`field_level_meds.csv` 仍是 MEDS 接口交叉表。
+> 派生/聚合字段单独放 `derived_fields.csv`；`field_level.csv` 的 `consumed` 列标出
+> 哪些映射真的被下游用上（38 条里 19 条）。
 >
 > **SQL 由映射生成**：`build_clinical_events.sql` 的每个字段表达式来自 `field_level.csv`，
-> `sql_execution_report.json.mapping_usage` 给出 mapping/transform/spec/derived/missing 计数。
+> `sql_execution_report.json.mapping_usage` 给出 mapping/transform/spec/derived/link/
+> postprocess/missing 的计数，并与事件表**逐类型行数 + 逐列非空数**对账。
+>
+> **MEDS 接口由声明驱动**：`governance/alignment/meds_targets.yaml` 是接口唯一声明
+> （10 类事件 × 5 个核心字段，每列写 `source ∈ spec/derived/mapping/none`），
+> `standardize` 按它产出事件，`crosswalk` 用声明 × 匹配结果生成
+> `field_level_meds.csv`（50 行，带 `resolved_by`），`interface.check_events` 校验
+> 实际事件流的命名空间与必填列；结果进 `quality/meds_interface_report.json`。
 >
 > **标签建在图谱之上**：`label` 阶段依赖 `graph`，住院级计数读边表、共病走两跳、
 > 概念对象主键与图谱 Concept 节点统一（`concept_key.concept_object_id`），
