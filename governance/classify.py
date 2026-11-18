@@ -31,8 +31,10 @@ RULES = [
      "病情推断", "授权科研", "编码可保留", "角色+用途", "受控共享"],
     ["C06", "临床文本", "ClinicalNote", "L3", "自由文本含叙述性隐私",
      "文本泄漏/重识别", "仅受控环境", "不对外提供原文", "沙箱 + 水印", "不共享，仅派生标签"],
-    ["C07", "统计汇总", "Patient360/Aggregate", "L1", "聚合后风险低",
+    ["C07", "统计汇总", "Aggregate", "L1", "聚合后风险低（k≥10）",
      "小样本推断", "可审核开放", "k-匿名/抑制", "披露审查", "满足披露控制后开放"],
+    ["C08", "患者级视图", "PatientSummary", "L3", "一人一行，含人口学、诊断与用药摘要",
+     "重识别 + 病种推断", "仅授权科研", "去标识后仍按敏感处理", "RBAC + 项目审批", "不共享原始行"],
 ]
 
 
@@ -70,8 +72,9 @@ def _result(ctx: GovernanceContext) -> pd.DataFrame:
             ["clinical_events", "ClinicalNote", "C06", levels["ClinicalNote"], int((events.event_type == "ClinicalNote").sum())],
             ["source_tables", "Encounter", "C02", "L3", int(len(ctx.tables["admissions"]))],
             ["source_tables", "Demographics", "C01", "L3", int(len(ctx.tables["patients"]))],
-            ["patient_360", "PatientSummary", "C07", "L1", int(len(ctx.patient_360))],
-            ["patient_360", "Demographics", "C01", "L3", int(len(ctx.patient_360))],
+            # 患者 360 是"一人一行"的患者级视图，不是聚合统计：按最高级别 L3 落，
+            # 与标签（L1.sensitivity）、数据本身一致；C07/L1 只给 k≥10 的聚合统计。
+            ["patient_360", "PatientSummary", "C08", "L3", int(len(ctx.patient_360))],
         ],
         columns=["dataset_table", "object", "category_id", "level", "rows"],
     )

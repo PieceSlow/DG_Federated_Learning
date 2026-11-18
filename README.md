@@ -47,7 +47,7 @@
 | 04 | 事件仓储 | 按 MEDS 目录落盘，写盘后重新读回再校验 | `eventstore/` |
 | 05 | 多源汇聚 | 统一事件表 + 患者 360 资源视图 | `dataset/*.parquet` |
 | 06 | 字段对齐 | schema matching：目标 schema + 四个匹配器 + 每个「目标字段 × 源表」top-k；**用映射生成组织汇聚 SQL 并对账** | `mapping/field_level.csv`、`build_clinical_events.sql`、`derived_fields.csv`、`field_level_meds.csv` |
-| 07 | 概念归一 | UMLS 编码/药名/检验名 → 概念（CUI）与语义类型 | `concept_map.parquet`、`concept_coverage.json` |
+| 07 | 概念归一 | UMLS 编码/药名/检验名 → 概念（CUI）与语义类型；无 UMLS 缓存时跳过、不生成产物 | `concept_map.parquet`、`concept_coverage.json` |
 | 08 | 对象化 | 智能体提案对象/关系 → 本地实例化（可回退确定性模型）+ 图谱自检 | `graph/nodes.parquet`、`graph/edges/*`、`object_graph.json` |
 | 09 | 标签化 | KV 对象标签 L1–L4，**读图谱算**（边表计数、两跳共病、概念节点） | `labels/object_labels.parquet`、`labels/tag_dictionary.csv`、`labels.json` |
 | 10 | 分类分级 | 7 条分级规则 + 落地结果 | `classification/*.csv` |

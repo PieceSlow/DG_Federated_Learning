@@ -129,6 +129,14 @@ def _coverage(
             "ratio": round(len(covered("Concept") & concept_ids) / len(concept_ids), 4) if concept_ids else 0.0,
             "graph_nodes": len(graph_concepts),
             "graph_matched": len(concept_ids & graph_concepts),
+            # 标签里的概念键有多少能落到图谱 Concept 节点上（ratio 只说明"标签打上了"，
+            # 不代表图谱也有；无 UMLS 时文书概念不建节点，会比 1.0 少一点）
+            "graph_ratio": (
+                round(len(concept_ids & graph_concepts) / len(concept_ids), 4)
+                if concept_ids
+                else 0.0
+            ),
+            "graph_missing": len(concept_ids - graph_concepts),
         },
     }
 
@@ -161,8 +169,17 @@ def run(ctx: GovernanceContext) -> None:
         )
     ObjectLabelStore(ctx.settings.governance / "labels").write(object_labels)
 
-    counts = (
+    tag_totals = (
         {str(k): int(v) for k, v in object_labels.groupby("tag_key").size().items()}
+        if not object_labels.empty
+        else {}
+    )
+    # 同一个 tag_key 会打在 Event/Patient/Dataset 等不同对象上，计数必须按 (tag_key, object)
+    object_counts = (
+        {
+            (str(k[0]), str(k[1])): int(v)
+            for k, v in object_labels.groupby(["tag_key", "object_type"]).size().items()
+        }
         if not object_labels.empty
         else {}
     )
@@ -173,7 +190,10 @@ def run(ctx: GovernanceContext) -> None:
     )
 
     dictionary = pd.DataFrame(definitions_catalog(definitions))
-    dictionary["count"] = dictionary["tag_key"].map(counts).fillna(0).astype(int)
+    dictionary["count"] = [
+        object_counts.get((str(row.tag_key), str(row.object)), 0)
+        for row in dictionary.itertuples()
+    ]
     labels_dir = ctx.settings.governance / "labels"
     labels_dir.mkdir(parents=True, exist_ok=True)
     dictionary.to_csv(labels_dir / "tag_dictionary.csv", index=False, encoding="utf-8-sig")
@@ -188,7 +208,7 @@ def run(ctx: GovernanceContext) -> None:
             "version": version,
             "note": "标签 = 打在对象上的 KV；L1 资产 / L2 记录 / L3 概念 / L4 断言",
             "layers": layer_counts,
-            "tag_keys": counts,
+            "tag_keys": tag_totals,
         },
         "coverage": coverage,
         "concept": {
@@ -214,7 +234,7 @@ def run(ctx: GovernanceContext) -> None:
         "object_labels": {
             "version": version,
             "definitions": definitions_catalog(definitions),
-            "counts": counts,
+            "counts": tag_totals,
             "manual_entries": int((object_labels["source"] == "manual").sum())
             if not object_labels.empty
             else 0,
@@ -225,7 +245,7 @@ def run(ctx: GovernanceContext) -> None:
     ctx.object_labels = object_labels
     ctx.stats["object_labels"] = {
         "rows": int(len(object_labels)),
-        "keys": counts,
+        "keys": tag_totals,
         "layers": layer_counts,
         "manual": labels["object_labels"]["manual_entries"],
         "coverage": coverage,
@@ -240,6 +260,7 @@ def run(ctx: GovernanceContext) -> None:
     )
     ctx.log(
         "标签化",
-        f"KV 标签 {len(object_labels)} 条，覆盖 {len(counts)} 个 tag_key；"
-        f"层分布 {layer_counts}；概念覆盖率 {coverage['Concept']['ratio']:.1%}。",
+        f"KV 标签 {len(object_labels)} 条，覆盖 {len(tag_totals)} 个 tag_key；"
+        f"层分布 {layer_counts}；概念覆盖率 {coverage['Concept']['ratio']:.1%}"
+        f"（图谱命中 {coverage['Concept']['graph_ratio']:.1%}）。",
     )

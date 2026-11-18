@@ -198,7 +198,10 @@ def run(ctx: GovernanceContext) -> None:
         _inventory_row("discharge", "note", "1 行/出院小结", "note_id", "临床文本", "L3",
                        None, "stream", "ClinicalNote 对象与文本事件"),
     ]
-    pd.DataFrame(ctx.inventory).to_csv(
+    inventory = pd.DataFrame(ctx.inventory)
+    # discharge 的读取行数要等文本阶段才知道，这里留空；转 Int64 避免整列变成 100.0
+    inventory["rows_loaded"] = inventory["rows_loaded"].astype("Int64")
+    inventory.to_csv(
         settings.governance / "metadata" / "data_source_inventory.csv",
         index=False,
         encoding="utf-8-sig",

@@ -151,8 +151,69 @@ class PipelineIntegrationTest(unittest.TestCase):
         base = self.settings.governance / "classification"
         rules = pd.read_csv(base / "rules.csv")
         result = pd.read_csv(base / "result.csv")
-        self.assertEqual(len(rules), 7)
+        # C01–C07 原有 7 条 + C08（患者级视图）
+        self.assertEqual(len(rules), 8)
         self.assertIn("L3", set(result["level"]))
+
+    def test_patient_360_is_l3(self) -> None:
+        """患者 360 是一人一行的患者级视图，不是聚合：只能有一个级别，且必须是 L3。"""
+        result = pd.read_csv(self.settings.governance / "classification" / "result.csv")
+        subset = result[result["dataset_table"] == "patient_360"]
+        self.assertEqual(len(subset), 1)
+        self.assertEqual(set(subset["level"]), {"L3"})
+        labels = pd.read_parquet(self.settings.governance / "labels" / "object_labels.parquet")
+        row = labels[
+            (labels["object_type"] == "Dataset") & (labels["object_id"] == "Dataset:patient_360")
+            & (labels["tag_key"] == "L1.sensitivity")
+        ]
+        self.assertEqual(set(row["tag_value"]), {"L3"})
+
+    def test_catalog_levels_agree_with_classification(self) -> None:
+        """编目不再自己定级：同一个表的级别必须和分级结果一致。"""
+        result = pd.read_csv(self.settings.governance / "classification" / "result.csv")
+        catalog = json.loads(
+            (self.settings.governance / "catalog" / "data_catalog.json").read_text(encoding="utf-8")
+        )
+        assets = {item["name"]: item for item in catalog["asset"]}
+        p360_level = "/".join(sorted(set(result.loc[result.dataset_table == "patient_360", "level"])))
+        self.assertEqual(assets["患者 360 宽表 patient_360"]["level"], p360_level)
+        ce_level = "/".join(sorted(set(result.loc[result.dataset_table == "clinical_events", "level"])))
+        self.assertEqual(assets["临床事件整合表 clinical_events"]["level"], ce_level)
+
+    def test_catalog_separates_field_and_record_level(self) -> None:
+        catalog = json.loads(
+            (self.settings.governance / "catalog" / "data_catalog.json").read_text(encoding="utf-8")
+        )
+        assets = {item["name"]: item for item in catalog["asset"]}
+        self.assertEqual(assets["字段级映射 field_level"]["level"], "L1")
+        self.assertEqual(assets["记录级血缘 record_level"]["level"], "L2")
+        self.assertNotIn("字段级/记录级映射", assets)
+        for item in catalog["asset"]:
+            self.assertIn("unit", item, msg=item["name"])
+
+    def test_share_dir_marks_text_stripping(self) -> None:
+        """事件仓储里有出院小结原文，共享条目必须写明剥离文本。"""
+        catalog = json.loads(
+            (self.settings.governance / "catalog" / "data_catalog.json").read_text(encoding="utf-8")
+        )
+        names = [item["name"] for item in catalog["share"]]
+        self.assertTrue(any("去文本" in name for name in names), msg=names)
+
+    def test_tag_dictionary_counts_by_object(self) -> None:
+        """同一个 tag_key 打在 Event/Patient/Dataset 上时，计数必须分开，不能都写总数。"""
+        dictionary = pd.read_csv(self.settings.governance / "labels" / "tag_dictionary.csv")
+        rows = dictionary[dictionary["tag_key"] == "L1.sensitivity"]
+        counts = dict(zip(rows["object"], rows["count"]))
+        self.assertEqual(counts, {"Event": 11, "Patient": 3, "Dataset": 3})
+
+    def test_concept_coverage_reports_graph_ratio(self) -> None:
+        coverage = json.loads(
+            (self.settings.governance / "quality" / "label_coverage.json").read_text(encoding="utf-8")
+        )
+        concept = coverage["Concept"]
+        self.assertIn("graph_ratio", concept)
+        self.assertIn("graph_missing", concept)
+        self.assertLessEqual(concept["graph_ratio"], 1.0)
 
     # ---- 质量规则确实被触发 -------------------------------------------------
     def test_issue_rules_triggered(self) -> None:
