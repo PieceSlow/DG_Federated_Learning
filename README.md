@@ -26,9 +26,9 @@
 > postprocess/missing 的计数，并与事件表**逐类型行数 + 逐列非空数**对账。
 >
 > **MEDS 接口由声明驱动**：`governance/alignment/meds_targets.yaml` 是接口唯一声明
-> （10 类事件 × 5 个核心字段，每列写 `source ∈ spec/derived/mapping/none`），
+> （11 类事件 × 5 个核心字段，每列写 `source ∈ spec/derived/mapping/none`），
 > `standardize` 按它产出事件，`crosswalk` 用声明 × 匹配结果生成
-> `field_level_meds.csv`（50 行，带 `resolved_by`），`interface.check_events` 校验
+> `field_level_meds.csv`（55 行，带 `resolved_by`），`interface.check_events` 校验
 > 实际事件流的命名空间与必填列；结果进 `quality/meds_interface_report.json`。
 >
 > **标签建在图谱之上**：`label` 阶段依赖 `graph`，住院级计数读边表、共病走两跳、
@@ -215,7 +215,7 @@ output/
 | 指标 | 数值 |
 |---|---|
 | 队列患者 | 100（78 train / 10 tuning / 12 held_out） |
-| MEDS 事件 | 147,640 条、3,558 个编码 |
+| MEDS 事件 | 148,336 条、3,892 个编码 |
 | 统一事件表 | 24,554 行（处方 18,384 / 诊断 5,319 / 操作 696 / 文书 155） |
 | 患者 360 | 100 行 |
 | 记录级映射 | 24,654 条（24,554 事件 + 100 患者） |
@@ -224,10 +224,10 @@ output/
 | SQL 字段来源 | mapping 19 / transform 1 / spec 2 / derived 32 / missing 10 |
 | 对象图谱 | 8 类对象、9 类关系；Concept 2,890 个（无 UMLS，编码级降级） |
 | KV 标签 | 86,873 条、16 个 tag_key；概念对象 2,890/2,890 命中图谱节点 |
-| 质量告警 | 441 条，error 0；详见 [docs/03](docs/03-质量校验与事件仓储.md) |
+| 质量告警 | 444 条，error 0；详见 [docs/03](docs/03-质量校验与事件仓储.md) |
 | 运行时间 | 130 秒（读取 10s、标准化 17s、写盘 38s、对齐 46s、治理阶段约 19s） |
 
-> 告警从旧文档的 158 条增至 441 条，原因是**文本一致性与图谱一致性规则已经生效**：
+> 告警从旧文档的 158 条增至 444 条，原因是**文本一致性与图谱一致性规则已经生效**：
 > 158（时间越界 119 + 重复 22 + 缺编码 17）+ 文本用药不一致 246（明细按规则上限 200 记）
 > + 文书缺章节 19 + 文本与 ICD 不一致 17 + 图谱时间冲突 1。
 

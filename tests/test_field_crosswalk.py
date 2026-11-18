@@ -1,4 +1,4 @@
-"""MEDS 接口台账测试：10 类事件 × 5 个核心字段，且回填匹配结果、不引入自造聚合。"""
+"""MEDS 接口台账测试：11 类事件 × 5 个核心字段，且回填匹配结果、不引入自造聚合。"""
 
 from __future__ import annotations
 
@@ -15,8 +15,8 @@ class CrosswalkTest(unittest.TestCase):
         cls.targets = load_targets()
 
     def test_one_row_per_event_and_core_field(self) -> None:
-        # 9 类结构化事件 + DEMOGRAPHIC（人门学锚定年龄，标准层确实会发）
-        self.assertEqual(len(self.targets), 10)
+        # 9 类结构化事件 + DEMOGRAPHIC（人口学锚定年龄）+ PROCEDURE（手术/操作）
+        self.assertEqual(len(self.targets), 11)
         self.assertEqual(len(self.frame), len(self.targets) * len(CORE_FIELDS))
         for event_type in self.targets:
             subset = self.frame[self.frame["event_type"] == event_type]
@@ -42,7 +42,7 @@ class CrosswalkTest(unittest.TestCase):
 
         namespaces = declared_namespaces(self.targets)
         for expected in ("GENDER", "DEMOGRAPHIC", "ADMISSION", "DISCHARGE", "ICU_STAY",
-                         "ICU_DISCHARGE", "DIAGNOSIS", "LAB", "MEDICATION"):
+                         "ICU_DISCHARGE", "DIAGNOSIS", "PROCEDURE", "LAB", "MEDICATION"):
             self.assertIn(expected, namespaces)
         for note_namespace in ("NOTE", "NOTE_SECTION", "NOTE_MEDICATION", "NOTE_DIAGNOSIS"):
             self.assertIn(note_namespace, namespaces)

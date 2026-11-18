@@ -23,10 +23,10 @@
 | MIMIC-IV 原始表 + 数据字典 | 源数据 | 有出处 |
 | 助教提供的 MEDS 源码（`third_party/meds`，v0.4） | 列与目录布局 | 有出处（**不含事件清单**） |
 | Lab4 任务文本 | 任务要求 | 有出处 |
-| `meds_targets.yaml` 的 10 类事件清单 | 对外接口 | **本组自定**（见 `docs/09` §2.2） |
+| `meds_targets.yaml` 的 11 类事件清单 | 对外接口 | **本组自定**（见 `docs/09` §2.2） |
 | `target_schema.yaml` 的 8 个字段 | 对齐目标 | **本组自定** |
 | `matchers.py` / `select.py` | 候选生成与选择 | 本组实现 |
-| `field_level.csv` / `field_level_meds.csv` | 匹配结果、接口台账（50 行） | 本组产物 |
+| `field_level.csv` / `field_level_meds.csv` | 匹配结果、接口台账（55 行） | 本组产物 |
 | `derived_fields.csv` | 派生/聚合字段说明 | 本组产物 |
 | `_archive/untrusted_20261116/` | 旧归档 | ❌ 不引用 |
 
@@ -102,9 +102,9 @@ governance/
 
 ## 4.1 接口现状
 
-`meds_targets.yaml` 是 MEDS 接口的**唯一声明**：10 类事件 × 5 个核心字段，每列写
+`meds_targets.yaml` 是 MEDS 接口的**唯一声明**：11 类事件 × 5 个核心字段，每列写
 `source ∈ {spec, derived, mapping, none}`，编码靠 `template` + `uses`；`standardize`
-按声明产出事件；`crosswalk` 用声明 × `field_level.csv` 生成 50 行台账，回填
+按声明产出事件；`crosswalk` 用声明 × `field_level.csv` 生成 55 行台账，回填
 `matched_source_*` 与 `resolved_by`；`interface.check_events` 校验实际命名空间与必填列。
 `procedures_icd` 目前不在接口里（`source_gaps` 写了补法），检验文本 `value` 未接入。
 
@@ -141,7 +141,7 @@ governance/
 
 - [x] schema matching（无 33 条静态表）
 - [x] KV 对象标签 + 标签字典 + 覆盖率
-- [x] MEDS 接口声明驱动 + 50 行接口台账（`unmapped` 0）
+- [x] MEDS 接口声明驱动 + 55 行接口台账（`unmapped` 0）
 - [x] `.env` / 20 元预算
 - [x] 222 测试通过
 - [ ] 小批量真实数据端到端（API ≤20 元）

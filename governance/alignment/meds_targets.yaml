@@ -20,13 +20,12 @@ interface: MEDS
 
 # 接口声明之外必须讲清楚的缺口：不写进来，评审时就会被当成"漏了"。
 source_gaps:
-  procedures_icd: >-
-    MIMIC 操作只在 clinical_events（Procedure 事件）里；MEDS 事件流目前不输出 PROCEDURE，
-    因为作业只要求 9 类事件。若要补，按 PROCEDURE//ICD{version}//{code} 加一个事件类型即可
-    （`source_tables: [procedures_icd]`，`time: chartdate`）。
   note_sub_namespaces: >-
     NOTE 事件另有 3 个由文书规则抽取的子命名空间（NOTE_SECTION / NOTE_MEDICATION /
     NOTE_DIAGNOSIS），它们共用 NOTE 的 subject/time/hadm，不给单独事件类型。
+  labevents_value: >-
+    接入阶段只取 labevents 的 valuenum/valueuom/flag，没有取自由文本 value，
+    所以 LAB.text_value 声明为 none；要补需改 ingest 的读取列并评估敏感级别。
 
 event_types:
   GENDER:
@@ -158,6 +157,27 @@ event_types:
         uses: ["diagnoses_icd.icd_version", "diagnoses_icd.icd_code"]
       numeric_value: {required: false, source: none}
       text_value: {required: false, source: none, note: "MEDS 不要求诊断文本"}
+
+  PROCEDURE:
+    description: 手术/操作（ICD-9 或 ICD-10-PCS）
+    source_tables: [procedures_icd, admissions, d_icd_procedures]
+    table: procedures_icd
+    emit_if: [icd_code]
+    check_hadm: true
+    skip_issue: {rule: CODE_MAPPING, detail: "缺少 icd_code，未输出"}
+    dictionary: {table: d_icd_procedures, columns: [icd_version, icd_code]}
+    code_namespaces: [PROCEDURE]
+    keys: {subject_id: subject_id, hadm_id: hadm_id}
+    fields:
+      subject_id: {required: true, source: derived, column: subject_id}
+      time: {required: true, source: derived, column: chartdate}
+      code:
+        required: true
+        source: spec
+        template: "PROCEDURE//ICD{icd_version:int}//{icd_code}"
+        uses: ["procedures_icd.icd_version", "procedures_icd.icd_code"]
+      numeric_value: {required: false, source: none, note: "操作没有数值结果"}
+      text_value: {required: false, source: none, note: "操作描述在 display/编码字典里，不是文本结果"}
 
   LAB:
     description: 检验结果（数值或文本，二者其一）

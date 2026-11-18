@@ -4,7 +4,7 @@
 
 - `target_schema.yaml`：对象字段目标（只列**由源字段直接提供**的 8 个字段，并限定允许的源表
   与可接受的源字段）；
-- `meds_targets.yaml`：MEDS 对外接口的**唯一声明**（10 类事件 × 核心 5 列，每列写
+- `meds_targets.yaml`：MEDS 对外接口的**唯一声明**（11 类事件 × 核心 5 列，每列写
   `source ∈ {spec, derived, mapping, none}`，编码靠 `template` + `uses`）。
 
 ## 匹配流程
@@ -25,7 +25,7 @@ extract_source_fields（类型/空值率/基数）
 meds_targets.yaml（声明）
   ├→ standardize：按 table / emit_if / template / time / numeric / text 产出事件
   ├→ interface.check_events：命名空间是否都声明过、必填列是否真的非空
-  └→ crosswalk：声明 × field_level.csv → field_level_meds.csv（50 行）
+  └→ crosswalk：声明 × field_level.csv → field_level_meds.csv（55 行）
         → interface_report：resolution / unmapped / undeclared / required_violations
 ```
 

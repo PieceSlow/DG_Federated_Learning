@@ -80,11 +80,15 @@ class DeclarationTest(unittest.TestCase):
         self.assertTrue({"NOTE", "NOTE_SECTION", "NOTE_MEDICATION", "NOTE_DIAGNOSIS"} <= namespaces)
 
     def test_source_gaps_are_written_down(self) -> None:
+        """缺口必须写在 source_gaps 里，补上的也要从缺口里去掉。"""
         from governance.alignment.targets import source_gaps
 
         gaps = source_gaps()
-        self.assertIn("procedures_icd", gaps)
-        self.assertTrue(gaps["procedures_icd"].strip())
+        self.assertIn("labevents_value", gaps)
+        self.assertTrue(gaps["labevents_value"].strip())
+        # 操作已经补成事件类型，不能再挂在缺口里当"没做"
+        self.assertNotIn("procedures_icd", gaps)
+        self.assertIn("PROCEDURE", self.targets)
 
 
 class DeclaredColumnGuardTest(unittest.TestCase):
