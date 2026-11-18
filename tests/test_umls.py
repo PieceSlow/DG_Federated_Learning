@@ -68,6 +68,8 @@ def write_fixture(root: Path) -> Path:
         _conso("C004", "ENG", "Y", "LNC", "LN", "2160-0", "Creatinine [Mass/volume] in Serum or Plasma"),
         _conso("C004", "ENG", "N", "LNC", "SY", "2160-0", "Creatinine"),
         _conso("C005", "ENG", "Y", "ICD10PCS", "PT", "0BH17EZ", "Insertion of endotracheal airway"),
+        _conso("C010", "ENG", "Y", "RXNORM", "IN", "glucose", "glucose"),
+        _conso("C011", "ENG", "Y", "RXNORM", "IN", "senna", "standardized senna concentrate"),
         _conso("C006", "ENG", "Y", "ICD9CM", "PT", "3893", "Venous catheterization"),
         # 以下应被过滤：非英文、被抑制、非目标词表
         _conso("C007", "SPA", "Y", "ICD10CM", "PT", "I10", "Hipertension esencial"),
@@ -85,7 +87,7 @@ def write_fixture(root: Path) -> Path:
     (meta / "MRSTY.RRF").write_text("\n".join(sty) + "\n", encoding="utf-8")
     rel = [
         _rel("C003", "RO", "C001", "may_treat", "RXNORM"),
-        _rel("C001", "RO", "C010", "may_treat", "RXNORM"),  # C010 不在概念集合，应过滤
+        _rel("C001", "RO", "C999", "may_treat", "RXNORM"),  # C999 不在概念集合，应过滤
         _rel("C001", "PAR", "C002", "", "SNOMEDCT_US"),
     ]
     (meta / "MRREL.RRF").write_text("\n".join(rel) + "\n", encoding="utf-8")
@@ -98,8 +100,8 @@ class PreprocessTest(unittest.TestCase):
             meta = write_fixture(Path(tmp))
             cache = Path(tmp) / "cache"
             manifest = preprocess(meta, cache)
-            self.assertEqual(manifest["concepts"], 6)
-            self.assertEqual(manifest["terms"], 8)
+            self.assertEqual(manifest["concepts"], 8)
+            self.assertEqual(manifest["terms"], 10)
             self.assertEqual(manifest["relations"], 2)
             for name in ("terms.parquet", "concepts.parquet", "sty.parquet", "rel.parquet"):
                 self.assertTrue((cache / name).exists(), name)
@@ -154,6 +156,14 @@ class LinkerTest(unittest.TestCase):
     def test_unmapped_returns_none(self) -> None:
         self.assertIsNone(self.linker.map_icd(10, "ZZZ"))
         self.assertIsNone(self.linker.map_drug("not-a-drug"))
+
+    def test_alias_maps_semantically_equal_generic_names(self) -> None:
+        """显式别名只收语义等价的通用名（见 drug_aliases.yaml）。"""
+        self.assertEqual(self.linker.map_drug("Dextrose 50%").cui, "C010")
+        self.assertEqual(self.linker.map_drug("Iso-Osmotic Dextrose").cui, "C010")
+        self.assertEqual(self.linker.map_drug("Senna").cui, "C011")
+        # 胰岛素是多品类通用名，不能硬映射到某一个成分
+        self.assertIsNone(self.linker.map_drug("Insulin"))
 
 
 class ConceptStageTest(unittest.TestCase):

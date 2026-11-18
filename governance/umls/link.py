@@ -17,6 +17,7 @@ from difflib import SequenceMatcher, get_close_matches
 from pathlib import Path
 
 import pandas as pd
+import yaml
 
 CACHE_FILES = ("terms.parquet", "concepts.parquet")
 
@@ -127,6 +128,14 @@ class ConceptLinker:
                 if len(token) >= 3:
                     self._ingredient_tokens.setdefault(token, set()).add(key)
 
+        # 显式别名（可审计）：只收语义等价的通用名，见 drug_aliases.yaml
+        self._aliases: dict[str, str] = {}
+        alias_path = Path(__file__).with_name("drug_aliases.yaml")
+        if alias_path.exists():
+            raw = yaml.safe_load(alias_path.read_text(encoding="utf-8")) or {}
+            for key, value in (raw.get("aliases") or {}).items():
+                self._aliases[normalize(key)] = str(value)
+
         self._cache: dict[tuple[str, str], ConceptMatch | None] = {}
 
     # ---- 对外 ------------------------------------------------------------
@@ -165,6 +174,13 @@ class ConceptLinker:
         hit = self._ingredient.get(cleaned)
         if hit is not None:
             return self._match(hit[0], 0.95, "ingredient_exact")
+        # 显式别名：dextrose = glucose、senna 制剂 = 番泻叶浓缩物（见 drug_aliases.yaml）
+        target = self._aliases.get(cleaned)
+        if target:
+            hit = self._ingredient.get(target) or self._cleaned.get(target)
+            if hit is not None:
+                return self._match(hit[0], 0.95, f"alias:{target}")
+
         # 单一通用名（"dextrose"、"insulin"）容易落到某个剂型上，只认成分表，宁可不映射；
         # 多词名称（"lactated ringers"、"heparin sodium"）才走"去噪声"索引。
         if " " in cleaned:

@@ -1,0 +1,13 @@
+# 药名别名：MIMIC 的通用名在 RxNorm 里没有同名成分时，显式指向规范成分。
+#
+# 只收**语义等价**的别名（dextrose = glucose、senna 制剂 = 番泻叶浓缩物），
+# 每一行都能在答辩时说清"为什么等同"。
+#
+# 不要在这里收胰岛素：MIMIC 药名只写 "Insulin"，但 HUMU/GLAR/LISPRO 等是不同品类，
+# 统一映射到某一个成分会制造临床错误——宁可保持未映射（见 concept_unmapped_top.csv）。
+version: "1.0"
+aliases:
+  dextrose: "glucose"
+  "iso osmotic dextrose": "glucose"
+  "dextrose 5 water": "glucose"
+  senna: "standardized senna concentrate"
