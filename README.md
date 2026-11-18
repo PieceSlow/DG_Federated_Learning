@@ -223,8 +223,8 @@ output/
 | 字段级映射 | 38 条（31 matcher / 7 declared；22 auto / 16 review），覆盖 8 个目标字段 |
 | 组织汇聚 SQL | 内存 SQLite 执行 24,554 行，与事件表逐类型一致（`status=ok`） |
 | SQL 字段来源 | mapping 19 / transform 1 / spec 2 / derived 32 / missing 10 |
-| 对象图谱 | 8 类对象、9 类关系；Concept 2,262 个（UMLS CUI 2,042 + 编码级兜底 220） |
-| KV 标签 | 136,732 条、19 个 tag_key（含 `L2.assertion`/`L2.certainty`）；概念对象 2,262/2,263 命中图谱节点（差 1 条文书概念） |
+| 对象图谱 | 8 类对象、9 类关系；Concept 2,259 个（UMLS CUI 2,039 + 编码级兜底 220） |
+| KV 标签 | 136,723 条、19 个 tag_key（含 `L2.assertion`/`L2.certainty`）；概念对象 2,259/2,260 命中图谱节点（差 1 条文书概念） |
 | 质量告警 | 925 条（含 `CONCEPT_UNMAPPED` 481），error 0；详见 [docs/03](docs/03-质量校验与事件仓储.md) |
 | 运行时间 | 130 秒（读取 10s、标准化 17s、写盘 38s、对齐 46s、治理阶段约 19s） |
 

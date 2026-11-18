@@ -20,6 +20,11 @@ class DetectTest(unittest.TestCase):
         report = detect(SNAPSHOT, baseline=None, level_diff=None)
         self.assertEqual(report["count"], 0)
 
+    def test_first_run_ignores_first_level_history(self) -> None:
+        report = detect(SNAPSHOT, baseline=None,
+                        level_diff={"changed": {}, "added": ["a"], "removed": []})
+        self.assertEqual(report["count"], 0)
+
     def test_new_table_and_free_text_column(self) -> None:
         baseline = {"patients": {"rows": 10, "columns": ["subject_id", "gender"]}}
         report = detect(SNAPSHOT, baseline, level_diff=None)

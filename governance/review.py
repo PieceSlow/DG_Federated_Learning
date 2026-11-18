@@ -61,16 +61,21 @@ def detect(snapshot: dict, baseline: dict | None, level_diff: dict | None) -> di
                         "detail": f"{table}.{column} 名称像自由文本/直接标识，建议按 L3 复核",
                     })
 
-    for key, (old, new) in ((level_diff or {}).get("changed") or {}).items():
-        signals.append({
-            "type": "level_changed",
-            "dataset": key,
-            "old": old,
-            "new": new,
-            "detail": f"{key} 级别 {old}→{new}，需确认变更依据",
-        })
-    for key in (level_diff or {}).get("added") or []:
-        signals.append({"type": "level_added", "dataset": key, "detail": f"{key} 首次纳入分级，需确认"})
+    if not initial:
+        for key, (old, new) in ((level_diff or {}).get("changed") or {}).items():
+            signals.append({
+                "type": "level_changed",
+                "dataset": key,
+                "old": old,
+                "new": new,
+                "detail": f"{key} 级别 {old}→{new}，需确认变更依据",
+            })
+        for key in (level_diff or {}).get("added") or []:
+            signals.append({
+                "type": "level_added",
+                "dataset": key,
+                "detail": f"{key} 首次纳入分级，需确认",
+            })
 
     return {
         "at": datetime.now(timezone.utc).isoformat(),
