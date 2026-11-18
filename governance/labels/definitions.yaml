@@ -114,9 +114,9 @@ labels:
     object: Patient
     layer: L4
     type: derived
-    rule: "n_distinct_drugs >= 10"
+    rule: "n_distinct_drugs >= 40"
     value: true
-    description: "多重用药：去重药品种类 >= 10"
+    description: "多重用药：跨住院去重药品种类 >= 40（本数据集代理口径，见 docs/05）"
 
   - key: L4.frequent_admitter
     object: Patient

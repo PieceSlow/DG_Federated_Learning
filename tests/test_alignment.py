@@ -151,18 +151,25 @@ class SelectTest(unittest.TestCase):
         self.assertEqual(selected["method"].tolist(), ["declared"])
 
 
+def _is_string_like(series: pd.Series) -> bool:
+    """字符串列判定要跨 pandas 版本：2.x 推断为 object，3.x 推断为 str。"""
+    return series.dtype.kind in "OUS"
+
+
 class SourceDtypeTest(unittest.TestCase):
     def test_time_columns_are_normalised(self) -> None:
         """源表时间列必须是 datetime，否则类型匹配器会把正确字段判为不兼容。"""
         frame = pd.DataFrame({"chartdate": ["2100-01-02"], "icd_code": ["X"]})
         coerce_times("procedures_icd", frame)
         self.assertEqual(str(frame["chartdate"].dtype)[:8], "datetime")
-        self.assertEqual(str(frame["icd_code"].dtype), "str")
+        # 非时间列不能被 coerce_times 改坏（pandas 2.x 与 3.x 的字符串 dtype 名称不同）
+        self.assertTrue(_is_string_like(frame["icd_code"]))
+        self.assertNotIn("datetime", str(frame["icd_code"].dtype))
 
     def test_unknown_table_is_untouched(self) -> None:
         frame = pd.DataFrame({"charttime": ["2100-01-02"]})
         coerce_times("not_a_table", frame)
-        self.assertEqual(str(frame["charttime"].dtype), "str")
+        self.assertTrue(_is_string_like(frame["charttime"]))
 
 
 class CoverageTest(unittest.TestCase):
