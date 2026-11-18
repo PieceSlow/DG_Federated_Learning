@@ -8,5 +8,7 @@ flexible-schema>=0.1
 PyYAML>=6
 requests>=2.31
 
-# 可选：仅对象图谱绘图（tools 下的脚本）需要
+# 可选：图谱可视化（scripts/draw_graph.py）与幻灯片需要
 Pillow>=10
+networkx>=3.0
+matplotlib>=3.8

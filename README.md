@@ -302,8 +302,27 @@ M1 包含：
 | [docs/07-数据与合规.md](docs/07-数据与合规.md) | 许可、分级处置、仓库红线、误提交处理 |
 | [docs/08-协作与代码约定.md](docs/08-协作与代码约定.md) | 分支、提交、命名、测试约定 |
 | [docs/附录-实验交付对照.md](docs/附录-实验交付对照.md) | 与课程两次实验的交付对应关系 |
+| [docs/11-变更记录与决策日志.md](docs/11-变更记录与决策日志.md) | 每批策略变更的原因、影响与验证 |
 
-## 十一、第三方组件
+## 十一、图谱可视化（可选，给汇报用）
+
+`scripts/draw_graph.py` 读 `governance/graph/` 的节点/边，出两张图（需要 `networkx` + `matplotlib`）：
+
+```powershell
+python scripts/draw_graph.py --graph-dir output/governance/graph --out-dir output/graphs
+```
+
+- `graph_schema.png` / `.dot`：类型级 schema（对象类型 + 关系 + 实例数），**不含患者信息**，
+  可以直接放进汇报；
+- `graph_Patient_<id>.png`：单个患者的实例图（Patient → Encounter → 事件 → 概念 CUI），
+  含 `subject_id`，**只用于本地演示，不要提交或外传**；
+- 默认自动挑"1 次住院、事件数适中"的患者，也可以
+  `--patient 10004113 --max-events 18` 指定。
+
+多智能体链路的证据在 `output/audit/agent_trace.jsonl`（每次调用一行：agent、step、decision、
+tokens、cost）；`--llm mock` 会留下"驳回 → 重试"的记录，`--llm api` 才是真实调用。
+
+## 十二、第三方组件
 
 `third_party/meds/` 是 MEDS 官方 `src/meds/schema.py` 的原样副本（Apache-2.0），
 仅用于按官方 schema 校验产物，声明见 `third_party/meds/NOTICE.md`。其余代码均为本组原创。
