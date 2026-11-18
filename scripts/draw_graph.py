@@ -71,25 +71,52 @@ def draw_class_model(manifest: dict, nodes: pd.DataFrame, out_dir: Path,
 
     specs = manifest.get("specs", {})
     counts = {str(k): int(v) for k, v in nodes.groupby("object_type").size().items()}
+    # 只画真正实例化了的类（智能体可能漏掉 ClinicalNote，画出来会是 0 实例的空框）
     event_types = [name for name in ("ICUStay", "Diagnosis", "Prescription",
-                                     "Procedure", "ClinicalNote") if name in specs]
+                                     "Procedure", "ClinicalNote")
+                   if name in specs and counts.get(name, 0) > 0]
+
+    # 每个类最多展示 9 行字段，其余折成 "+N more"，避免类框高度失控
+    shown: dict[str, list[str]] = {}
+    hidden: dict[str, int] = {}
+    for name, spec in specs.items():
+        keys = list(spec.get("keys", []))
+        attrs = [attr for attr in spec.get("attributes", []) if attr not in keys]
+        limit = 9
+        picked = keys[:limit] + attrs[: max(0, limit - len(keys))]
+        shown[name] = picked
+        hidden[name] = len(keys) + len(attrs) - len(picked)
+
+    heights = {
+        name: 0.60 + 0.24 * (len(shown[name]) + (1 if hidden[name] else 0)) + 0.34
+        for name in specs
+    }
+
+    event_max_h = max((heights[name] for name in event_types), default=2.0)
+    event_top = 5.2 + event_max_h
+    bus_y = event_top + 0.45
+    concept_y = event_top - event_max_h - 0.55 - heights.get("Concept", 2.0) / 2
+    encounter_y = bus_y + 0.55 + heights["Encounter"] / 2 if "Encounter" in specs else event_top
+    patient_y = (encounter_y + heights["Encounter"] / 2 + 0.55 + heights["Patient"] / 2
+                 if "Encounter" in specs and "Patient" in specs else encounter_y + 2)
+
     event_xs = [1.9 + 3.35 * index for index in range(len(event_types))]
-    positions = {"Patient": (8.6, 11.7), "Encounter": (8.6, 9.0)}
+    positions = {}
+    if "Patient" in specs and counts.get("Patient", 0) > 0:
+        positions["Patient"] = (8.6, patient_y)
+    if "Encounter" in specs and counts.get("Encounter", 0) > 0:
+        positions["Encounter"] = (8.6, encounter_y)
     for x, name in zip(event_xs, event_types):
-        positions[name] = (x, 5.3)
-    if "Concept" in specs:
-        positions["Concept"] = (8.6, 1.6)
+        positions[name] = (x, event_top - heights[name] / 2)
+    if "Concept" in specs and counts.get("Concept", 0) > 0:
+        positions["Concept"] = (8.6, concept_y)
 
-    widths = {name: 3.2 for name in positions}
-    heights = {}
-    for name in positions:
-        spec = specs[name]
-        lines = len(spec.get("keys", [])) + len(spec.get("attributes", []))
-        heights[name] = 0.60 + 0.24 * lines + 0.34
-
-    figure, axis = plt.subplots(figsize=(17.5, 12.5))
+    widths = {name: 3.3 for name in positions}
+    y_low = min(concept_y - heights.get("Concept", 2) / 2, min(positions[n][1] - heights[n] / 2 for n in positions)) - 0.4
+    y_high = max(positions[n][1] + heights[n] / 2 for n in positions) + 0.4
+    figure, axis = plt.subplots(figsize=(17.5, max(8.0, 0.62 * (y_high - y_low))))
     axis.set_xlim(0, 17.4)
-    axis.set_ylim(0, 13.2)
+    axis.set_ylim(y_low, y_high)
     axis.axis("off")
 
     def top(name: str) -> float:
@@ -120,58 +147,59 @@ def draw_class_model(manifest: dict, nodes: pd.DataFrame, out_dir: Path,
                   color="#666666", linewidth=0.9, zorder=4)
 
         line_y = y + height / 2 - 0.46 - 0.18
-        for key in spec.get("keys", []):
-            axis.text(x - width / 2 + 0.14, line_y, f"+ {key}", fontsize=8.2,
+        key_set = set(spec.get("keys", []))
+        for name_field in shown[name]:
+            prefix = "+" if name_field in key_set else "-"
+            axis.text(x - width / 2 + 0.14, line_y, f"{prefix} {name_field}", fontsize=8.2,
                       va="center", zorder=5, family="DejaVu Sans")
             line_y -= 0.24
-        if spec.get("keys") and spec.get("attributes"):
-            axis.plot([x - width / 2, x + width / 2], [line_y + 0.06] * 2,
-                      color="#dddddd", linewidth=0.8, linestyle="--", zorder=4)
-        for attribute in spec.get("attributes", []):
-            axis.text(x - width / 2 + 0.14, line_y, f"- {attribute}", fontsize=8.2,
-                      va="center", color="#333333", zorder=5, family="DejaVu Sans")
+        if hidden[name]:
+            axis.text(x - width / 2 + 0.14, line_y, f"… +{hidden[name]} more",
+                      fontsize=7.6, va="center", color="#777777", style="italic", zorder=5)
             line_y -= 0.24
         footer = f"source: {spec.get('source_table', '?')} · {counts.get(name, 0):,}"
         axis.text(x - width / 2 + 0.14, y - height / 2 + 0.15, footer, fontsize=6.8,
                   color="#666666", va="center", style="italic", zorder=5,
                   family="DejaVu Sans")
 
-    # 事件层虚线框
     if event_types:
         left = min(event_xs) - widths[event_types[0]] / 2 - 0.2
         right = max(event_xs) + widths[event_types[-1]] / 2 + 0.2
-        tops = max(top(name) for name in event_types) + 0.2
-        bottoms = min(bottom(name) for name in event_types) - 0.2
+        event_tops = max(top(name) for name in event_types) + 0.2
+        event_bottoms = min(bottom(name) for name in event_types) - 0.2
         axis.add_patch(FancyBboxPatch(
-            (left, bottoms), right - left, tops - bottoms,
+            (left, event_bottoms), right - left, event_tops - event_bottoms,
             boxstyle="round,pad=0.02,rounding_size=0.12", linewidth=1.0,
             edgecolor="#999999", facecolor="none", linestyle="--", zorder=1))
-        axis.text(left + 0.1, tops + 0.03, "event layer", fontsize=8, color="#777777",
-                  va="bottom", style="italic")
+        axis.text(left + 0.1, event_tops + 0.03, "event layer", fontsize=8,
+                  color="#777777", va="bottom", style="italic")
 
     def arrow(x1: float, y1: float, x2: float, y2: float) -> None:
         axis.add_patch(FancyArrowPatch((x1, y1), (x2, y2), arrowstyle="-|>",
                                        mutation_scale=12, linewidth=1.2,
                                        color="#555555", zorder=2))
 
-    # Patient → Encounter
-    arrow(8.6, bottom("Patient"), 8.6, top("Encounter"))
-    axis.text(8.78, (bottom("Patient") + top("Encounter")) / 2, "has_encounter  1:N",
-              fontsize=7.5, color="#333333", ha="left", va="center",
-              bbox={"boxstyle": "round,pad=0.12", "fc": "white", "ec": "none", "alpha": 0.85})
+    if "Patient" in specs and "Encounter" in specs:
+        arrow(8.6, bottom("Patient"), 8.6, top("Encounter"))
+        axis.text(8.78, (bottom("Patient") + top("Encounter")) / 2, "has_encounter  1:N",
+                  fontsize=7.5, color="#333333", ha="left", va="center",
+                  bbox={"boxstyle": "round,pad=0.12", "fc": "white", "ec": "none", "alpha": 0.85})
 
-    # Encounter → 事件：一条水平总线 + 5 根竖直箭头，标签写在总线上方
-    bus_y = 7.45
-    axis.plot([8.6, 8.6], [bottom("Encounter"), bus_y], color="#555555", linewidth=1.2, zorder=2)
-    axis.plot([min(event_xs), max(event_xs)], [bus_y, bus_y], color="#555555",
-              linewidth=1.2, zorder=2)
-    for x, name in zip(event_xs, event_types):
-        arrow(x, bus_y, x, top(name))
-        axis.text(x + 0.06, bus_y + 0.06, f"has_{name.lower()}  1:N", fontsize=6.8,
-                  color="#333333", ha="left", va="bottom", zorder=6,
-                  bbox={"boxstyle": "round,pad=0.10", "fc": "white", "ec": "none", "alpha": 0.9})
+    if "Encounter" in specs:
+        axis.plot([8.6, 8.6], [bottom("Encounter"), bus_y], color="#555555",
+                  linewidth=1.2, zorder=2)
+        axis.plot([min(event_xs), max(event_xs)], [bus_y, bus_y], color="#555555",
+                  linewidth=1.2, zorder=2)
+        relation_by_target = {spec["to"]: spec["name"]
+                              for spec in manifest.get("relation_specs", [])
+                              if spec.get("from") == "Encounter"}
+        for x, name in zip(event_xs, event_types):
+            arrow(x, bus_y, x, top(name))
+            relation = relation_by_target.get(name, f"has_{name.lower()}")
+            axis.text(x + 0.06, bus_y + 0.06, f"{relation}  1:N", fontsize=6.8,
+                      color="#333333", ha="left", va="bottom", zorder=6,
+                      bbox={"boxstyle": "round,pad=0.10", "fc": "white", "ec": "none", "alpha": 0.9})
 
-    # 事件 → Concept：三根直箭头，标签放在来源框下方
     if "Concept" in specs:
         concept_x, concept_top = positions["Concept"][0], top("Concept")
         for name, relation in (("Diagnosis", "diagnosis_concept"),
@@ -185,8 +213,9 @@ def draw_class_model(manifest: dict, nodes: pd.DataFrame, out_dir: Path,
                       color="#333333", ha="left", va="top", zorder=6,
                       bbox={"boxstyle": "round,pad=0.10", "fc": "white", "ec": "none", "alpha": 0.9})
 
+    relation_count = len(manifest.get("relations", {}))
     axis.set_title(
-        "Object model — UML class diagram: 8 classes, 9 associations\n"
+        f"Object model — UML class diagram: {len(positions)} classes, {relation_count} associations\n"
         "+ key field   - attribute   (sensitivity tag in title bar; instance count in footer)",
         fontsize=13, pad=10)
     figure.tight_layout()
