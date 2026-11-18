@@ -296,14 +296,28 @@ class ConceptLayerTest(unittest.TestCase):
         self.assertEqual(graph.manifest["objects"]["Concept"], 3)
         self.assertEqual(verify(graph), [])
 
-    def test_empty_or_missing_concept_map_is_noop(self) -> None:
-        base = build_graph(_tables(), _notes())
-        self.assertIs(build_concept_layer(base, None), base)
-        self.assertIs(build_concept_layer(base, pd.DataFrame()), base)
+    def test_no_concept_map_degrades_to_code_level_nodes(self) -> None:
+        """没有 UMLS 时概念层必须降级存在；否则图谱有 0 个概念对象，标签却有概念标签。"""
+        graph = build_concept_layer(build_graph(_tables(), _notes()), None)
+        concepts = graph.nodes[graph.nodes.object_type == "Concept"]
+        self.assertGreater(len(concepts), 0)
+        self.assertTrue(all(str(item).startswith("Concept:") for item in concepts.object_id))
+        self.assertEqual(graph.manifest["objects"]["Concept"], len(concepts))
+        self.assertEqual(verify(graph), [])
 
-    def test_unmapped_codes_are_ignored(self) -> None:
-        graph = build_concept_layer(build_graph(_tables(), _notes()), _concept_map().iloc[0:0])
-        self.assertEqual(len(graph.nodes[graph.nodes.object_type == "Concept"]), 0)
+    def test_empty_concept_map_degrades_like_missing_one(self) -> None:
+        missing = build_concept_layer(build_graph(_tables(), _notes()), None)
+        empty = build_concept_layer(build_graph(_tables(), _notes()), pd.DataFrame())
+        self.assertEqual(
+            set(missing.nodes["object_id"]), set(empty.nodes["object_id"])
+        )
+
+    def test_unmapped_codes_are_ignored_in_umls_mode(self) -> None:
+        """有 UMLS 时只收已归一的编码，未归一的不造 CUI 节点。"""
+        graph = build_concept_layer(build_graph(_tables(), _notes()), _concept_map())
+        concepts = graph.nodes[graph.nodes.object_type == "Concept"]
+        self.assertEqual(len(concepts), 3)
+        self.assertTrue(all(str(item).startswith("Concept:C") for item in concepts.object_id))
 
 
 if __name__ == "__main__":

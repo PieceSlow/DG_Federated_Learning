@@ -52,18 +52,3 @@ def extract_source_fields(tables: dict[str, pd.DataFrame], sample: int = 50_000)
                 )
             )
     return fields
-
-
-def targets_from_gold(field_map: pd.DataFrame) -> list[FieldView]:
-    """目标字段来自数据集设计（gold 映射的 target 侧）。"""
-    targets: list[FieldView] = []
-    for position, row in enumerate(field_map.itertuples()):
-        targets.append(
-            FieldView(
-                table=str(row.dataset_table),
-                name=str(row.dataset_field),
-                dtype=str(row.dtype),
-                position=position,
-            )
-        )
-    return targets

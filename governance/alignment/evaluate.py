@@ -1,70 +1,56 @@
-"""以人工确认的 33 条映射为 gold，评测匹配算法。"""
+"""对齐覆盖率评估：不再以 33 条静态映射为 gold。
+
+评价的是"目标字段是否被匹配到、必填字段是否覆盖、多少条需要人工复核"，
+而不是"与某张人工表的精确一致率"。
+"""
 
 from __future__ import annotations
 
 import pandas as pd
 
-SKIP_SOURCES = {"derived", "多个源表", "-", ""}
+from governance.alignment.target_schema import ObjectTarget
 
 
-def gold_pairs(field_map: pd.DataFrame, source_tables: set[str]) -> dict[tuple[str, str], tuple[str, str]]:
-    pairs: dict[tuple[str, str], tuple[str, str]] = {}
-    for row in field_map.itertuples():
-        source_table = str(row.source_table)
-        source_field = str(row.source_field)
-        if source_table not in source_tables or source_field in SKIP_SOURCES:
-            continue
-        pairs[(str(row.dataset_table), str(row.dataset_field))] = (source_table, source_field)
-    return pairs
+def coverage(field_map: pd.DataFrame, targets: list[ObjectTarget]) -> dict:
+    if field_map is None or field_map.empty:
+        mapped: set[tuple[str, str]] = set()
+    else:
+        mapped = set(zip(field_map["target_table"], field_map["target_field"]))
 
+    required = {(target.table, target.field) for target in targets if target.required}
+    all_targets = {(target.table, target.field) for target in targets}
+    required_mapped = required & mapped
+    missing_required = sorted(f"{table}.{field}" for table, field in required - mapped)
 
-def evaluate(
-    selected: pd.DataFrame,
-    candidates: pd.DataFrame,
-    field_map: pd.DataFrame,
-) -> dict:
-    source_tables = set(candidates["source_table"].unique()) if not candidates.empty else set()
-    gold = gold_pairs(field_map, source_tables)
+    by_target: dict[str, dict] = {}
+    for target in targets:
+        key = (target.table, target.field)
+        subset = (
+            field_map[
+                (field_map["target_table"] == target.table)
+                & (field_map["target_field"] == target.field)
+            ]
+            if field_map is not None and not field_map.empty
+            else pd.DataFrame()
+        )
+        by_target[f"{target.table}.{target.field}"] = {
+            "required": target.required,
+            "mapped": key in mapped,
+            "candidates": int(len(subset)),
+            "best_score": round(float(subset["score"].max()), 4) if not subset.empty else 0.0,
+        }
 
-    predicted = {
-        (row.target_table, row.target_field): (row.source_table, row.source_field)
-        for row in selected.itertuples()
-    }
-
-    exact = sum(1 for key, value in predicted.items() if gold.get(key) == value)
-    precision = round(exact / len(predicted), 4) if predicted else 0.0
-    recall = round(exact / len(gold), 4) if gold else 0.0
-
-    top3_hits = 0
-    if not candidates.empty:
-        top3 = candidates[candidates["rank"] <= 3]
-        for key, expected in gold.items():
-            subset = top3[(top3["target_table"] == key[0]) & (top3["target_field"] == key[1])]
-            if any(
-                (row.source_table, row.source_field) == expected
-                for row in subset.itertuples()
-            ):
-                top3_hits += 1
-    top3_recall = round(top3_hits / len(gold), 4) if gold else 0.0
-
-    differences = []
-    for key, expected in gold.items():
-        actual = predicted.get(key)
-        if actual != expected:
-            differences.append(
-                {
-                    "target": f"{key[0]}.{key[1]}",
-                    "gold": f"{expected[0]}.{expected[1]}",
-                    "predicted": f"{actual[0]}.{actual[1]}" if actual else None,
-                }
-            )
-
+    auto = int((field_map["status"] == "auto").sum()) if "status" in field_map else 0
+    review = int((field_map["status"] == "review").sum()) if "status" in field_map else 0
     return {
-        "gold_pairs": len(gold),
-        "predicted_pairs": len(predicted),
-        "exact_matches": exact,
-        "precision": precision,
-        "recall": recall,
-        "top3_recall": top3_recall,
-        "differences": differences,
+        "targets_total": len(all_targets),
+        "targets_mapped": len(mapped),
+        "coverage": round(len(mapped) / len(all_targets), 4) if all_targets else 0.0,
+        "required_total": len(required),
+        "required_mapped": len(required_mapped),
+        "required_coverage": round(len(required_mapped) / len(required), 4) if required else 1.0,
+        "missing_required": missing_required,
+        "auto_mappings": auto,
+        "review_mappings": review,
+        "by_target": by_target,
     }

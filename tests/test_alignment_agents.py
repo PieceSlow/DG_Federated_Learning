@@ -1,4 +1,4 @@
-"""P1-1c：对齐智能体（AlignerAgent + AlignmentVerifierAgent）测试。"""
+"""对齐智能体（AlignerAgent + AlignmentVerifierAgent）测试。"""
 
 from __future__ import annotations
 
@@ -9,14 +9,18 @@ from pathlib import Path
 
 from governance.agents.alignment_verifier import AlignmentVerifierAgent
 from governance.agents.views import require_no_patient_data
-from governance.align import _field_map
 from governance.alignment.agentic import (
     align_with_agents,
     build_evidence,
     candidate_view,
 )
-from governance.alignment.schema import extract_source_fields, targets_from_gold
+from governance.alignment.schema import extract_source_fields
 from governance.alignment.select import build_candidates
+from governance.alignment.target_schema import (
+    allowed_table_map,
+    load_object_targets,
+    target_views,
+)
 from governance.config import Settings
 from governance.context import GovernanceContext
 from governance.llm import LLMConfig, build_service
@@ -24,22 +28,25 @@ from tests.test_graph import _tables
 
 
 def _setup():
-    sources = extract_source_fields(_tables())
-    field_map = _field_map()
-    candidates = build_candidates(sources, targets_from_gold(field_map))
-    return field_map, candidates
+    targets = load_object_targets()
+    candidates = build_candidates(
+        extract_source_fields(_tables()),
+        target_views(targets),
+        allowed_tables=allowed_table_map(targets),
+    )
+    return candidates
 
 
 class CandidateViewTest(unittest.TestCase):
     def test_view_contains_only_metadata(self) -> None:
-        _, candidates = _setup()
+        candidates = _setup()
         view = candidate_view(candidates, top_k=3)
         require_no_patient_data(view)
         self.assertTrue(view["targets"])
         self.assertLessEqual(len(view["targets"][0]["candidates"]), 3)
 
     def test_evidence_flags_missing_candidate(self) -> None:
-        _, candidates = _setup()
+        candidates = _setup()
         evidence = build_evidence(
             [{"target_table": "clinical_events", "target_field": "event_time",
               "source_table": "admissions", "source_field": "patient_id"}],
@@ -50,7 +57,7 @@ class CandidateViewTest(unittest.TestCase):
 
 class VerifierTest(unittest.TestCase):
     def test_rejects_missing_candidate(self) -> None:
-        _, candidates = _setup()
+        candidates = _setup()
         mapping = {"target_table": "clinical_events", "target_field": "event_time",
                    "source_table": "admissions", "source_field": "patient_id"}
         evidence = build_evidence([mapping], candidates)
@@ -59,7 +66,7 @@ class VerifierTest(unittest.TestCase):
         self.assertEqual(verdict.issues[0]["rule"], "NOT_IN_CANDIDATES")
 
     def test_accepts_valid_mapping(self) -> None:
-        _, candidates = _setup()
+        candidates = _setup()
         mapping = {"target_table": "clinical_events", "target_field": "subject_id",
                    "source_table": "patients", "source_field": "subject_id"}
         evidence = build_evidence([mapping], candidates)
@@ -76,13 +83,13 @@ class AlignWithAgentsTest(unittest.TestCase):
         return ctx
 
     def test_mock_aligner_rejects_then_retries(self) -> None:
-        field_map, candidates = _setup()
+        candidates = _setup()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             ctx = self._context(root)
             ctx.llm = build_service(LLMConfig(provider="mock"), ctx.settings.output)
 
-            selected, info = align_with_agents(ctx, candidates, field_map)
+            selected, info = align_with_agents(ctx, candidates)
 
             self.assertIsNotNone(selected)
             self.assertEqual(info["status"], "ok")
@@ -98,10 +105,10 @@ class AlignWithAgentsTest(unittest.TestCase):
             self.assertEqual(agents.count("AlignmentVerifierAgent"), 2)
 
     def test_off_mode_skips(self) -> None:
-        field_map, candidates = _setup()
+        candidates = _setup()
         with tempfile.TemporaryDirectory() as tmp:
             ctx = self._context(Path(tmp))
-            selected, info = align_with_agents(ctx, candidates, field_map)
+            selected, info = align_with_agents(ctx, candidates)
             self.assertIsNone(selected)
             self.assertEqual(info["status"], "skipped")
 

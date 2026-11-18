@@ -1,39 +1,150 @@
-version: "1.0"
+version: "2.0"
 
-# 标签直接打在对象上（object_type + object_id），value 以字符串保存。
-# 规则用 pandas DataFrame.eval 计算，可用列见 labels/engine.py 的 feature 构建。
+# 标签 = 打在对象上的 KV 断言（object_type + object_id），不是宽表里的列。
+# 层：L1 资产级 / L2 记录级 / L3 概念级 / L4 断言级。
+# type: field（复制对象属性） / rule（布尔规则） / constant（固定值）
+# 规则用 pandas DataFrame.eval 执行；列名中的 "." 已替换为 "_"。
 labels:
-  - key: elderly
+  # ---------- L1 资产级 ----------
+  - key: L1.sensitivity
+    object: Event
+    layer: L1
+    type: field
+    field: sensitivity
+    description: "事件敏感级别（L2 受控 / L3 仅本地）"
+
+  - key: L1.sensitivity
     object: Patient
+    layer: L1
+    type: field
+    field: sensitivity
+    description: "患者对象敏感级别（含人口学，固定 L3）"
+
+  - key: L1.sensitivity
+    object: Dataset
+    layer: L1
+    type: field
+    field: sensitivity
+    description: "数据集最高敏感级别"
+
+  - key: L1.sharing_boundary
+    object: Dataset
+    layer: L1
+    type: field
+    field: sharing_boundary
+    description: "数据集共享边界：controlled / aggregate_only"
+
+  # ---------- L2 记录级 ----------
+  - key: L2.entity_class
+    object: Event
+    layer: L2
+    type: field
+    field: event_type
+    description: "事件属于哪类对象：Diagnosis / Procedure / Prescription / ClinicalNote"
+
+  - key: L2.time_precision
+    object: Event
+    layer: L2
+    type: field
+    field: time_precision
+    description: "时间精度：datetime / date / null"
+
+  - key: L2.missing_reason
+    object: Event
+    layer: L2
+    type: field
+    field: missing_reason
+    description: "缺失原因：no_source_field / non_numeric"
+
+  - key: L2.elderly
+    object: Patient
+    layer: L2
     type: fact
     rule: "anchor_age >= 65"
     value: true
     description: "65 岁及以上"
 
-  - key: long_stay
+  - key: L2.long_stay
     object: Encounter
+    layer: L2
     type: derived
     rule: "los_days > 7"
     value: true
     description: "住院超过 7 天"
 
-  - key: polypharmacy
-    object: Encounter
-    type: derived
-    rule: "n_prescriptions >= 5"
-    value: true
-    description: "住院期间处方条目 >= 5"
-
-  - key: high_followup_priority
-    object: Encounter
-    type: profile
-    rule: "patient_elderly & label_long_stay"
-    value: true
-    description: "老年且长住院：建议随访资源优先（业务画像示例）"
-
-  - key: icu_long_stay
+  - key: L2.icu_long_stay
     object: ICUStay
+    layer: L2
     type: derived
     rule: "los_days > 3"
     value: true
     description: "ICU 停留超过 3 天"
+
+  # ---------- L3 概念级 ----------
+  - key: L3.code_system
+    object: Concept
+    layer: L3
+    type: field
+    field: code_system
+    description: "概念编码体系：ICD9 / ICD10 / MIMIC_FORMULARY / MIMIC_NOTE"
+
+  - key: L3.semantic_type
+    object: Concept
+    layer: L3
+    type: field
+    field: semantic_type
+    description: "语义类型：UMLS STY；无 UMLS 时降级为 ICD 章节"
+
+  - key: L3.cui
+    object: Concept
+    layer: L3
+    type: field
+    field: cui
+    description: "UMLS 概念唯一标识（由组员提供的 concept_map 生成）"
+
+  # ---------- L4 断言级 ----------
+  - key: L4.comorbidity_burden
+    object: Patient
+    layer: L4
+    type: field
+    field: comorbidity_burden
+    description: "共病负担：患者诊断涉及的 ICD 章节数"
+
+  - key: L4.polypharmacy
+    object: Patient
+    layer: L4
+    type: derived
+    rule: "n_distinct_drugs >= 10"
+    value: true
+    description: "多重用药：去重药品种类 >= 10"
+
+  - key: L4.frequent_admitter
+    object: Patient
+    layer: L4
+    type: derived
+    rule: "n_admissions >= 3"
+    value: true
+    description: "高频住院：本数据集内住院次数 >= 3"
+
+  - key: L4.drug_intensity
+    object: Patient
+    layer: L4
+    type: field
+    field: drug_intensity
+    description: "用药强度：去重药品种类数 / 住院天数"
+
+  - key: L4.polypharmacy_encounter
+    object: Encounter
+    layer: L4
+    type: derived
+    rule: "n_prescriptions >= 5"
+    value: true
+    description: "本次住院处方条目 >= 5"
+
+  - key: L4.high_followup_priority
+    object: Encounter
+    layer: L4
+    type: profile
+    rule: "patient_L2_elderly & label_L2_long_stay"
+    value: true
+    description: "老年且长住院：建议随访资源优先"

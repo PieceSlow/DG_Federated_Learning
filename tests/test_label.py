@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import unittest
 
-from governance.label import icd_chapter, sensitivity_for
+from governance.icd import icd_chapter
+from governance.label import sensitivity_for
 
 
 class Icd10ChapterTest(unittest.TestCase):

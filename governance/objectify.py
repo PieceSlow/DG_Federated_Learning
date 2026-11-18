@@ -103,6 +103,8 @@ def run(ctx: GovernanceContext) -> None:
         "relations": relations,
     }
     ctx.object_graph = graph
+    # 节点与边也要放上上下文：标签阶段要按图谱（而不是宽表）算断言。
+    ctx.graph = graph_data
 
     metadata = ctx.settings.governance / "metadata"
     metadata.mkdir(parents=True, exist_ok=True)

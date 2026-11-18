@@ -1,0 +1,66 @@
+# 派生字段与聚合字段：不属于"字段对齐"，不参与源字段匹配。
+# kind: derived（派生）/ aggregate（聚合）/ direct（直接引用）
+version: "1.0"
+datasets:
+  clinical_events:
+    - field: record_id
+      kind: derived
+      inputs: [source_table, subject_id, hadm_id, seq_num, pharmacy_id, note_id]
+      formula: "DX/PX/RX/NOTE 前缀 + 业务键"
+      note: "同一源行稳定唯一"
+    - field: event_type
+      kind: derived
+      inputs: [source_table]
+      formula: "diagnoses_icd→Diagnosis；procedures_icd→Procedure；prescriptions→Prescription；discharge→ClinicalNote"
+      note: "对象类别"
+    - field: code_system
+      kind: derived
+      inputs: [source_table, icd_version]
+      formula: "ICD9/ICD10/MIMIC_FORMULARY/MIMIC_NOTE"
+      note: "术语体系"
+    - field: source_table
+      kind: derived
+      inputs: [source_table]
+      formula: "来源表名"
+      note: "记录级血缘"
+    - field: source_record_id
+      kind: derived
+      inputs: [source_table, rowid, note_id]
+      formula: "表名:行号 / discharge:note_id"
+      note: "可回溯到原始行"
+    - field: split
+      kind: derived
+      inputs: [subject_id]
+      formula: "sha256(subject_id) 70/15/15"
+      note: "患者级划分，防泄漏"
+    - field: sensitivity
+      kind: derived
+      inputs: [event_type]
+      formula: "ClinicalNote→L3，其余→L2"
+      note: "分级标签"
+    - field: icd_chapter
+      kind: derived
+      inputs: [icd_version, icd_code]
+      formula: "ICD 章节映射"
+      note: "粗粒度语义标签"
+
+  patient_360:
+    - {field: subject_id, kind: direct, inputs: [patients.subject_id], formula: "直接引用", note: "主键"}
+    - {field: gender, kind: direct, inputs: [patients.gender], formula: "直接引用", note: "人口学"}
+    - {field: anchor_age, kind: direct, inputs: [patients.anchor_age], formula: "直接引用", note: "锚定年龄"}
+    - {field: anchor_year, kind: direct, inputs: [patients.anchor_year], formula: "直接引用", note: "去标识时间轴"}
+    - {field: n_admissions, kind: aggregate, inputs: [admissions.hadm_id], formula: "count per subject_id", note: "住院次数"}
+    - {field: total_los_days, kind: aggregate, inputs: [admissions.admittime, admissions.dischtime], formula: "sum(dischtime-admittime)", note: "累计住院天数"}
+    - {field: mortality, kind: aggregate, inputs: [admissions.hospital_expire_flag], formula: "max", note: "住院死亡标志"}
+    - {field: first_admit, kind: aggregate, inputs: [admissions.admittime], formula: "min", note: "首次入院"}
+    - {field: last_discharge, kind: aggregate, inputs: [admissions.dischtime], formula: "max", note: "末次出院"}
+    - {field: n_icu, kind: aggregate, inputs: [icustays.stay_id], formula: "count", note: "ICU 停留次数"}
+    - {field: n_diagnosis, kind: aggregate, inputs: [diagnoses_icd.icd_code], formula: "count", note: "诊断条数"}
+    - {field: n_procedure, kind: aggregate, inputs: [procedures_icd.icd_code], formula: "count", note: "操作条数"}
+    - {field: n_prescription, kind: aggregate, inputs: [prescriptions.pharmacy_id], formula: "count", note: "处方条数"}
+    - {field: n_notes, kind: aggregate, inputs: [discharge.note_id], formula: "count", note: "文书份数"}
+    - {field: text_chars, kind: aggregate, inputs: [discharge.text], formula: "sum(len(text))", note: "文本规模"}
+    - {field: top_diagnosis, kind: aggregate, inputs: [diagnoses_icd.icd_code, d_icd_diagnoses.long_title], formula: "出现次数最多的诊断", note: "聚合标签"}
+    - {field: top_drug, kind: aggregate, inputs: [prescriptions.drug], formula: "出现次数最多的药品", note: "聚合标签"}
+    - {field: split, kind: derived, inputs: [subject_id], formula: "sha256(subject_id) 70/15/15", note: "患者级划分"}
+    - {field: sensitivity, kind: derived, inputs: [patient_360], formula: "行级取最高 L3", note: "分级标签"}

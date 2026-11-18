@@ -79,7 +79,6 @@ def build_evidence(mappings: list[dict[str, Any]], candidates: pd.DataFrame) -> 
 def align_with_agents(
     ctx: GovernanceContext,
     candidates: pd.DataFrame,
-    field_map: pd.DataFrame,
 ) -> tuple[pd.DataFrame | None, dict[str, Any]]:
     if ctx.llm is None or ctx.llm.config.provider == "off":
         return None, {"status": "skipped", "reason": "provider=off"}
