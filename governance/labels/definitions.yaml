@@ -49,6 +49,20 @@ labels:
     field: time_precision
     description: "时间精度：datetime / date / null"
 
+  - key: L2.assertion
+    object: Event
+    layer: L2
+    type: field
+    field: assertion
+    description: "断言状态：present / negated / hypothetical / historical / family（文书规则抽取，取最强）"
+
+  - key: L2.certainty
+    object: Event
+    layer: L2
+    type: field
+    field: certainty
+    description: "确定性：definite / possible（hypothetical、family 视为 possible）"
+
   - key: L2.missing_reason
     object: Event
     layer: L2

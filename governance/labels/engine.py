@@ -428,7 +428,25 @@ def _icu_frame(tables: dict[str, pd.DataFrame], encounter_flags: pd.DataFrame) -
     return icu
 
 
-def _event_frame(events: pd.DataFrame) -> pd.DataFrame:
+#: 文书中抽取出的断言强弱：否定 > 疑似 > 家族史 > 既往 > 肯定
+_ASSERTION_ORDER = ("negated", "hypothetical", "family", "historical", "present")
+
+
+def _strongest_assertion(values: pd.Series) -> str:
+    found = {str(value) for value in values if value}
+    for assertion in _ASSERTION_ORDER:
+        if assertion in found:
+            return assertion
+    return "present"
+
+
+def _event_frame(events: pd.DataFrame, meds_events: pd.DataFrame | None = None) -> pd.DataFrame:
+    """事件视图：加上时间精度、缺失原因、**断言状态**与**确定性**。
+
+    ``assertion`` / ``certainty`` 来自文书规则抽取（``ctx.events`` 里的
+    ``assertion`` 字段）：同一份小结可能有多行，取最强的一条（否定优先）。
+    结构化事件本身是源记录，按"肯定/确定"处理。
+    """
     frame = events.copy()
     frame["event_time"] = pd.to_datetime(frame["event_time"], errors="coerce")
     frame["time_precision"] = "datetime"
@@ -443,6 +461,25 @@ def _event_frame(events: pd.DataFrame) -> pd.DataFrame:
         & frame["event_type"].eq("Prescription")
     )
     frame.loc[numeric_missing, "missing_reason"] = "non_numeric"
+    frame["assertion"] = "present"
+    if (
+        meds_events is not None
+        and not meds_events.empty
+        and "assertion" in meds_events.columns
+        and "source_record_id" in meds_events.columns
+    ):
+        extracted = meds_events[meds_events["assertion"].astype(str) != "present"]
+        if not extracted.empty:
+            note_level = extracted.groupby("source_record_id")["assertion"].apply(
+                _strongest_assertion
+            )
+            mask = frame["source_table"].eq("discharge")
+            frame.loc[mask, "assertion"] = (
+                frame.loc[mask, "source_record_id"].map(note_level).fillna("present")
+            )
+    frame["certainty"] = (
+        frame["assertion"].map({"hypothetical": "possible", "family": "possible"}).fillna("definite")
+    )
     frame["object_id"] = "Event:" + frame["record_id"].astype(str)
     frame["sensitivity"] = frame["sensitivity"].fillna("L2")
     return frame
@@ -637,6 +674,7 @@ def compute_labels(
     version: str | None = None,
     graph: Any = None,
     issues: list[dict[str, Any]] | None = None,
+    meds_events: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """计算对象标签；manual_path 提供的手动标签会覆盖同名断言。
 
@@ -680,7 +718,7 @@ def compute_labels(
     event_rows: list[dict[str, Any]] = []
     concept_rows: list[dict[str, Any]] = []
     if events is not None and not events.empty:
-        event_frame = _event_frame(events)
+        event_frame = _event_frame(events, meds_events)
         event_rows = _collect(event_frame, definitions, "Event", version, now)
         concept_frame = _concept_frame(events, concept_map)
         concept_rows = _collect(concept_frame, definitions, "Concept", version, now)

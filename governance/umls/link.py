@@ -36,6 +36,26 @@ def normalize(text: str) -> str:
     return value
 
 
+#: 药名里的剂型/规格噪声：清掉后再匹配，"OxyCODONE (Immediate Release)" → "oxycodone"
+_DRUG_NOISE = {
+    "solution", "injectable", "injection", "suspension", "oral", "tablet", "tablets",
+    "capsule", "capsules", "usp", "human", "recombinant", "intravenous", "flush",
+    "syringe", "vial", "bag", "pack", "kit",
+    "mg", "ml", "g", "mcg", "meq", "unt", "unit", "units", "eq", "per", "each",
+}
+
+
+def clean_term(text: str) -> str:
+    """药名/检验名的"去噪声"规范化：去括号内容、剂型、纯数字。"""
+    without_parens = re.sub(r"\([^)]*\)", " ", str(text))
+    tokens = [
+        token
+        for token in normalize(without_parens).split()
+        if token not in _DRUG_NOISE and not re.fullmatch(r"[\d.]+", token)
+    ]
+    return " ".join(tokens)
+
+
 class ConceptLinker:
     def __init__(self, cache_dir: Path) -> None:
         cache_dir = Path(cache_dir)
@@ -83,6 +103,30 @@ class ConceptLinker:
                     if len(token) >= 3:
                         token_index.setdefault(token, set()).add(key)
             self._token_index[sab] = token_index
+        # 药名"去噪声"索引：{} 里的品牌/剂型不影响概念；只用成分/商品名/规范名
+        self._cleaned: dict[str, tuple[str, str]] = {}
+        drug_terms = self.terms[
+            (self.terms["sab"] == "RXNORM")
+            & (self.terms["tty"].isin({"IN", "SY", "PSN", "SCD", "SBD"}))
+        ]
+        for cui, term in zip(drug_terms["cui"], drug_terms["str"]):
+            key = clean_term(term)
+            if key and key not in self._cleaned:
+                self._cleaned[key] = (str(cui), str(term))
+
+        # 成分级（TTY=IN）索引 + token 倒排，用于"复方/带规格药名 → 成分"兜底
+        ingredients = self.terms[(self.terms["sab"] == "RXNORM") & (self.terms["tty"] == "IN")]
+        self._ingredient: dict[str, tuple[str, str]] = {}
+        for cui, term in zip(ingredients["cui"], ingredients["str"]):
+            key = clean_term(term)
+            if key and key not in self._ingredient:
+                self._ingredient[key] = (str(cui), str(term))
+        self._ingredient_tokens: dict[str, set[str]] = {}
+        for key in self._ingredient:
+            for token in set(key.split()):
+                if len(token) >= 3:
+                    self._ingredient_tokens.setdefault(token, set()).add(key)
+
         self._cache: dict[tuple[str, str], ConceptMatch | None] = {}
 
     # ---- 对外 ------------------------------------------------------------
@@ -103,7 +147,48 @@ class ConceptLinker:
         return None
 
     def map_drug(self, name: str) -> ConceptMatch | None:
-        return self._lexical("RXNORM", name, cutoff=0.9)
+        """药名 → 概念：精确 → 去噪声精确 → 成分精确 → 成分 token 包含 → 模糊。
+
+        MIMIC 的药名是自由文本（``Insulin``、``OxyCODONE (Immediate Release)``、
+        ``Sodium Chloride 0.9%  Flush``），RXNORM 里对应的是带剂型的规范名
+        （``oxycodone``、``sodium chloride 0.9 % flush...``），所以只做字符串精确
+        会漏掉一大半——这里逐级放宽，命中级别记录在 ``method`` 里便于复核。
+        """
+        match = self._lexical("RXNORM", name, cutoff=0.9)
+        if match is not None:
+            return match
+
+        cleaned = clean_term(name)
+        if not cleaned:
+            return None
+        # 成分精确最可靠（"sodium chloride"、"oxycodone"）
+        hit = self._ingredient.get(cleaned)
+        if hit is not None:
+            return self._match(hit[0], 0.95, "ingredient_exact")
+        # 单一通用名（"dextrose"、"insulin"）容易落到某个剂型上，只认成分表，宁可不映射；
+        # 多词名称（"lactated ringers"、"heparin sodium"）才走"去噪声"索引。
+        if " " in cleaned:
+            hit = self._cleaned.get(cleaned)
+            if hit is not None:
+                return self._match(hit[0], 0.95, "term_cleaned")
+
+        # 成分词条必须全部出现在输入里（"sodium chloride" ⊆ "sodium chloride flush"）
+        tokens = set(cleaned.split())
+        candidates: set[str] = set()
+        for token in tokens:
+            if len(token) >= 3:
+                candidates |= self._ingredient_tokens.get(token, set())
+        best: tuple[int, str] | None = None
+        for key in candidates:
+            key_tokens = set(key.split())
+            if key_tokens and key_tokens <= tokens:
+                if best is None or len(key_tokens) > best[0]:
+                    best = (len(key_tokens), key)
+        if best is not None:
+            cui, _ = self._ingredient[best[1]]
+            return self._match(cui, 0.9, "ingredient_token")
+
+        return self._lexical("RXNORM", cleaned, cutoff=0.88)
 
     def map_lab(self, label: str) -> ConceptMatch | None:
         return self._lexical("LNC", label, cutoff=0.9)

@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from governance.concept_key import ConceptResolver
 from governance.context import GovernanceContext, require_state
 from governance.umls.config import UMLS_VERSION, cache_root
 from governance.umls.link import ConceptLinker
@@ -153,9 +154,51 @@ def run(ctx: GovernanceContext) -> None:
             "examples": missing_sty["cui"].head(10).tolist(),
         },
     }
+    # ---- 未映射靶子清单：按事件频次排序，先知道"改哪几个最值" ----
+    # 光有覆盖率不够：要知道"这 713 个编码里，哪 20 个覆盖了大部分事件"，
+    # 优化才不是盲调。清单只做统计，不改任何映射结果。
+    unmapped_top = pd.DataFrame(
+        columns=["event_type", "source_system", "code", "label", "events", "share"]
+    )
+    events = getattr(ctx, "clinical_events", None)
+    if events is not None and not events.empty and "code" in events.columns:
+        resolver = ConceptResolver(ctx.concept_map)
+        frame = events[["event_type", "code_system", "code", "display"]].copy()
+        frame = frame.dropna(subset=["code_system", "code"])
+        frame = frame[frame["code"].astype(str).str.strip() != ""]
+        frame["mapped"] = [
+            resolver.resolve(row.event_type, row.code_system, row.code, getattr(row, "display", None))
+            is not None
+            for row in frame.itertuples(index=False)
+        ]
+        total_events = int(len(frame))
+        unmapped = frame[~frame["mapped"]]
+        report["events"] = total_events
+        report["unmapped_events"] = int(len(unmapped))
+        report["unmapped_share"] = (
+            round(len(unmapped) / total_events, 4) if total_events else 0.0
+        )
+        if not unmapped.empty:
+            grouped = (
+                unmapped.fillna({"display": ""})
+                .groupby(["event_type", "code_system", "code", "display"], dropna=False)
+                .size()
+                .reset_index(name="events")
+                .rename(columns={"display": "label"})
+                .sort_values(["events", "event_type"], ascending=[False, True])
+            )
+            grouped["share"] = (grouped["events"] / total_events).round(4)
+            unmapped_top = grouped.head(200).reset_index(drop=True)
+        report["unmapped_top"] = unmapped_top.head(20).to_dict("records")
+
     (ctx.settings.governance / "quality").mkdir(parents=True, exist_ok=True)
     (ctx.settings.governance / "quality" / "concept_coverage.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    unmapped_top.to_csv(
+        ctx.settings.governance / "quality" / "concept_unmapped_top.csv",
+        index=False,
+        encoding="utf-8-sig",
     )
 
     ctx.stats["concept_mapping"] = report
@@ -163,5 +206,7 @@ def run(ctx: GovernanceContext) -> None:
         "概念归一",
         f"映射 {totals['mapped']}/{totals['total']} 个编码/术语到 UMLS 概念"
         f"（覆盖率 {totals['coverage']:.1%}，精确 {totals['exact']}、模糊 {totals['fuzzy']}），"
-        f"产出 {len(concept_map)} 条 concept_map。",
+        f"产出 {len(concept_map)} 条 concept_map；"
+        f"未映射事件 {report.get('unmapped_events', 0)}/{report.get('events', 0)}"
+        f"（{report.get('unmapped_share', 0):.1%}，清单见 quality/concept_unmapped_top.csv）。",
     )

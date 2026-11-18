@@ -161,6 +161,7 @@ def run(ctx: GovernanceContext) -> None:
         version=version,
         graph=ctx.graph,
         issues=graph_issues,
+        meds_events=pd.DataFrame(ctx.events) if ctx.events else None,
     )
     for issue in graph_issues:
         ctx.add_issue(
