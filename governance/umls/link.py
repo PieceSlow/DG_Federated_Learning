@@ -195,7 +195,7 @@ class ConceptLinker:
             if len(token) >= 3:
                 candidates |= self._ingredient_tokens.get(token, set())
         best: tuple[int, str] | None = None
-        for key in candidates:
+        for key in sorted(candidates):
             key_tokens = set(key.split())
             if key_tokens and key_tokens <= tokens:
                 if best is None or len(key_tokens) > best[0]:
@@ -256,7 +256,9 @@ class ConceptLinker:
         if sets:
             candidate = min(sets, key=len)
             if 0 < len(candidate) <= 20_000:
-                return list(candidate)
+                # 排序：set 迭代顺序受哈希随机化影响，不排序会让模糊匹配的平局
+                # 在不同进程间抖动（同一份数据跑出不同的 CUI/节点数）
+                return sorted(candidate)
         return self._lexicon_keys[sab]
 
 
