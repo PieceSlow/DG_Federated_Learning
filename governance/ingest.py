@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -160,6 +161,19 @@ def run(ctx: GovernanceContext) -> None:
             coerce_times(name, tables[name])
 
     ctx.tables = tables
+    # 表结构快照：给"动态新增对象"用（不依赖再次读原始数据）
+    schema_snapshot = {
+        name: {
+            "rows": int(len(frame)),
+            "columns": {str(column): str(dtype) for column, dtype in frame.dtypes.items()},
+        }
+        for name, frame in tables.items()
+    }
+    metadata_dir = ctx.settings.governance / "metadata"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    (metadata_dir / "schema_snapshot.json").write_text(
+        json.dumps(schema_snapshot, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     ctx.cohort = subjects
     ctx.stats.update(
         {

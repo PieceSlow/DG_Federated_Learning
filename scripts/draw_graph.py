@@ -71,10 +71,16 @@ def draw_class_model(manifest: dict, nodes: pd.DataFrame, out_dir: Path,
 
     specs = manifest.get("specs", {})
     counts = {str(k): int(v) for k, v in nodes.groupby("object_type").size().items()}
-    # 只画真正实例化了的类（智能体可能漏掉 ClinicalNote，画出来会是 0 实例的空框）
-    event_types = [name for name in ("ICUStay", "Diagnosis", "Prescription",
-                                     "Procedure", "ClinicalNote")
-                   if name in specs and counts.get(name, 0) > 0]
+    # 只画真正实例化了的类（智能体可能漏掉 ClinicalNote，画出来会是 0 实例的空框）；
+    # 除 Patient/Encounter/Concept 外都算"事件层"，已知类型优先，新增类型排后面。
+    known_order = ["ICUStay", "Diagnosis", "Prescription", "Procedure", "ClinicalNote"]
+    others = [name for name in specs
+              if name not in {"Patient", "Encounter", "Concept", *known_order}
+              and counts.get(name, 0) > 0]
+    event_types = [
+        name for name in [*known_order, *others]
+        if name in specs and counts.get(name, 0) > 0
+    ]
 
     # 每个类最多展示 9 行字段，其余折成 "+N more"，避免类框高度失控
     shown: dict[str, list[str]] = {}
@@ -100,7 +106,12 @@ def draw_class_model(manifest: dict, nodes: pd.DataFrame, out_dir: Path,
     patient_y = (encounter_y + heights["Encounter"] / 2 + 0.55 + heights["Patient"] / 2
                  if "Encounter" in specs and "Patient" in specs else encounter_y + 2)
 
-    event_xs = [1.9 + 3.35 * index for index in range(len(event_types))]
+    left_x, right_x = 1.8, 16.6
+    if len(event_types) <= 1:
+        event_xs = [8.6]
+    else:
+        step = (right_x - left_x) / (len(event_types) - 1)
+        event_xs = [left_x + step * index for index in range(len(event_types))]
     positions = {}
     if "Patient" in specs and counts.get("Patient", 0) > 0:
         positions["Patient"] = (8.6, patient_y)
@@ -111,11 +122,12 @@ def draw_class_model(manifest: dict, nodes: pd.DataFrame, out_dir: Path,
     if "Concept" in specs and counts.get("Concept", 0) > 0:
         positions["Concept"] = (8.6, concept_y)
 
-    widths = {name: 3.3 for name in positions}
+    base_width = 3.3 if len(event_types) <= 5 else min(3.0, (right_x - left_x) / max(len(event_types), 1) * 0.9)
+    widths = {name: base_width for name in positions}
     y_low = min(concept_y - heights.get("Concept", 2) / 2, min(positions[n][1] - heights[n] / 2 for n in positions)) - 0.4
     y_high = max(positions[n][1] + heights[n] / 2 for n in positions) + 0.4
-    figure, axis = plt.subplots(figsize=(17.5, max(8.0, 0.62 * (y_high - y_low))))
-    axis.set_xlim(0, 17.4)
+    figure, axis = plt.subplots(figsize=(19.0, max(8.0, 0.62 * (y_high - y_low))))
+    axis.set_xlim(0, 18.0)
     axis.set_ylim(y_low, y_high)
     axis.axis("off")
 

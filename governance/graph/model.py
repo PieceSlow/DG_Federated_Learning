@@ -52,6 +52,66 @@ def _require(mapping: dict[str, Any], key: str, where: str) -> Any:
     return mapping[key]
 
 
+def _merge_overlay(model: ObjectModel, overlay_path: Path) -> ObjectModel:
+    """把人工确认过的"新增对象"合并进模型（``objects.local.yaml``）。
+
+    动态新增对象的流程：智能体/人工提出 spec → 校验 → 写入 overlay →
+    下次 ``load_model`` 自动带上。overlay 不覆盖已有对象，只追加。
+    """
+    if not overlay_path.exists():
+        return model
+    data = yaml.safe_load(overlay_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        raise ValueError(f"对象 overlay 不是映射: {overlay_path}")
+
+    objects = dict(model.objects)
+    for item in data.get("objects") or []:
+        name = str(item.get("name") or "").strip()
+        if not name:
+            raise ValueError("overlay 对象缺少 name")
+        if name in objects:
+            raise ValueError(f"overlay 对象与已有对象重名: {name}")
+        keys = tuple(str(key) for key in item.get("keys") or [])
+        if not keys:
+            raise ValueError(f"overlay 对象 {name} 缺少 keys")
+        objects[name] = ObjectSpec(
+            name=name,
+            keys=keys,
+            attributes=tuple(str(attr) for attr in item.get("attributes") or []),
+            sensitivity=str(item.get("sensitivity") or "L2"),
+            source_table=str(item.get("source_table") or ""),
+            interface=str(item.get("interface") or item.get("source_table") or ""),
+            concept=str(item.get("concept") or name),
+        )
+
+    relations = list(model.relations)
+    known = {relation.name for relation in relations}
+    for item in data.get("relations") or []:
+        relation = RelationSpec(
+            name=str(item.get("name") or ""),
+            from_object=str(item.get("from") or ""),
+            to_object=str(item.get("to") or ""),
+            on=str(item.get("on") or ""),
+            cardinality=str(item.get("cardinality") or "1:N"),
+        )
+        if not relation.name or relation.name in known:
+            raise ValueError(f"overlay 关系名缺失或重复: {relation.name}")
+        if relation.from_object not in objects or relation.to_object not in objects:
+            raise ValueError(f"overlay 关系 {relation.name} 引用了未定义的对象")
+        if relation.on not in objects[relation.from_object].keys:
+            raise ValueError(
+                f"overlay 关系 {relation.name} 的 on 必须是 {relation.from_object} 的主键"
+            )
+        known.add(relation.name)
+        relations.append(relation)
+
+    return ObjectModel(
+        version=f"{model.version}+local",
+        objects=objects,
+        relations=tuple(relations),
+    )
+
+
 @lru_cache(maxsize=None)
 def load_model(path: str | None = None) -> ObjectModel:
     model_path = Path(path) if path else MODEL_PATH
@@ -101,8 +161,9 @@ def load_model(path: str | None = None) -> ObjectModel:
     if len({relation.name for relation in specs}) != len(specs):
         raise ValueError("关系名重复")
 
-    return ObjectModel(
+    model = ObjectModel(
         version=str(data.get("version", "1.0")),
         objects=objects,
         relations=tuple(specs),
     )
+    return _merge_overlay(model, model_path.with_name("objects.local.yaml"))
