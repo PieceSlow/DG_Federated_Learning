@@ -35,10 +35,18 @@ def build_parser() -> argparse.ArgumentParser:
                         help="每名患者最多使用几份出院小结")
     parser.add_argument("--stages", default=None,
                         help="只运行指定阶段（逗号分隔，如 assemble,align）；默认全流程")
-    parser.add_argument("--llm", choices=["off", "mock", "api"],
+    parser.add_argument("--llm", choices=["off", "mock", "api", "ollama"],
                         default=os.environ.get("LLM_PROVIDER", "off"),
-                        help="智能体推理内核：off（默认，确定性建图）/ mock / api")
+                        help="智能体推理内核：off（默认，确定性建图）/ mock / api / "
+                             "ollama（本机 Ollama 原生接口，关闭思考）")
     parser.add_argument("--llm-model", default=os.environ.get("LLM_MODEL", "deepseek-flash"))
+    parser.add_argument("--llm-base-url", default=os.environ.get("LLM_BASE_URL"),
+                        help="OpenAI 兼容地址；本机 Ollama 用 http://127.0.0.1:11434/v1")
+    parser.add_argument("--llm-timeout", type=float, default=None,
+                        help="单次调用超时（秒）；默认 api=60、ollama=900")
+    parser.add_argument("--llm-max-tokens", type=int,
+                        default=int(os.environ.get("LLM_MAX_TOKENS", "4000")),
+                        help="单次输出上限；思考型模型（如 qwen3）建议 8000，否则推理会吃光额度")
     parser.add_argument("--llm-budget-cny", type=float,
                         default=float(os.environ.get("LLM_BUDGET_CNY", "20")))
     parser.add_argument("--llm-budget-usd", type=float, default=None,
@@ -90,10 +98,33 @@ def main(argv: list[str] | None = None) -> int:
     llm = None
     if args.llm != "off":
         try:
+            # 本机模型慢得多：8B 在 8 GB 显存上约 4 tok/s，60 秒默认会直接超时
+            default_timeout = 900.0 if args.llm == "ollama" else 60.0
+            timeout_s = (
+                args.llm_timeout
+                if args.llm_timeout is not None
+                else float(os.environ.get("LLM_TIMEOUT_S", default_timeout))
+            )
             config = LLMConfig(
                 provider=args.llm,
                 model=args.llm_model,
                 api_key=os.environ.get("DEEPSEEK_API_KEY"),
+                timeout_s=timeout_s,
+                max_tokens=args.llm_max_tokens,
+                num_ctx=(
+                    int(os.environ.get("LLM_NUM_CTX", "16384"))
+                    if args.llm == "ollama"
+                    else None
+                ),
+                **(
+                    {"base_url": args.llm_base_url}
+                    if args.llm_base_url
+                    else (
+                        {"base_url": "http://127.0.0.1:11434"}
+                        if args.llm == "ollama"
+                        else {}
+                    )
+                ),
             )
             llm = build_service(
                 config,

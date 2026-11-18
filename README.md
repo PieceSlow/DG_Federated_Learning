@@ -254,9 +254,14 @@ python -m governance.agents.demo --llm off    # 演示关闭时明确报错、�
 python -m governance.agents.demo --mimic-root "E:\mimic-iv数据\mimic-iv-3.1"  # 用真实表结构
 ```
 
-**P1-1c 对齐智能体**：`--llm mock/api` 时，`AlignerAgent` 从本地 top-k 候选中选映射，
+**P1-1c 对齐智能体**：`--llm mock/ollama/api` 时，`AlignerAgent` 从本地 top-k 候选中选映射，
 `AlignmentVerifierAgent` 用类型/空值率/候选合法性驳回，最多重试 2 次；
 `--llm off` 回退到匹配器选择。
+
+**本机模型（`--llm ollama`）**：走 Ollama **原生** `/api/chat`，请求里关闭思考，
+默认 16k 上下文、900 秒超时、零费用。实测 qwen3:8b / RTX 4070 Laptop 8 GB / 20 人队列：
+**302 秒、5 次调用、字段对齐 1 轮通过（8 条映射）、对象与关系提案通过、图谱 `model_version=agent-proposal`**。
+详见 [docs/00](docs/00-本地运行与密钥.md)。
 
 **M2.6a 智能体建图**：`ObjectFinderAgent`（提对象）→ 校验器（表/主键必须真实）→
 `RelationExtractorAgent`（提关系）→ 本地 `build_graph` 执行 → `GraphCriticAgent`（审缺陷）→

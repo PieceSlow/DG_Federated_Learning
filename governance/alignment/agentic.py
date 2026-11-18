@@ -76,6 +76,36 @@ def build_evidence(mappings: list[dict[str, Any]], candidates: pd.DataFrame) -> 
     return evidence
 
 
+def canonicalize_targets(
+    mappings: list[dict[str, Any]],
+    candidates: pd.DataFrame,
+) -> tuple[list[dict[str, Any]], int]:
+    """把模型写错的目标标识纠正回候选集里的那一套。
+
+    实测 qwen3 会把 ``target_table`` 填成源表名（``diagnoses_icd.code``），
+    而候选集的 ``target_table`` 恒为数据集名（``clinical_events``）。
+    这里只做**无歧义纠正**：``target_field`` 在候选集中唯一对应一个目标表时，
+    才把 ``target_table`` 改写过去；对不上的保持原样，交给校验器驳回。
+    """
+    targets = set(zip(candidates["target_table"], candidates["target_field"]))
+    tables_by_field: dict[str, set[str]] = {}
+    for table, field in targets:
+        tables_by_field.setdefault(str(field), set()).add(str(table))
+
+    fixed = 0
+    adjusted: list[dict[str, Any]] = []
+    for mapping in mappings:
+        item = dict(mapping)
+        key = (str(item.get("target_table")), str(item.get("target_field")))
+        if key not in targets:
+            tables = tables_by_field.get(str(item.get("target_field")))
+            if tables and len(tables) == 1:
+                item["target_table"] = next(iter(tables))
+                fixed += 1
+        adjusted.append(item)
+    return adjusted, fixed
+
+
 def align_with_agents(
     ctx: GovernanceContext,
     candidates: pd.DataFrame,
@@ -88,13 +118,15 @@ def align_with_agents(
     verifier = AlignmentVerifierAgent(trace_writer=writer)
     payload: dict[str, Any] = {"candidate_view": candidate_view(candidates)}
     history: list[dict[str, Any]] = []
+    canonicalized = 0
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         try:
             proposed = aligner.run(payload)
         except (LLMError, ValueError) as exc:
             return None, {"status": "error", "attempts": attempt, "error": str(exc), "history": history}
-        mappings = proposed.artifacts["mappings"]
+        mappings, fixed = canonicalize_targets(proposed.artifacts["mappings"], candidates)
+        canonicalized += fixed
         evidence = build_evidence(mappings, candidates)
         verdict = verifier.run({"mappings": mappings, "evidence": evidence})
         if verdict.ok:
@@ -108,9 +140,15 @@ def align_with_agents(
                 "status": "ok",
                 "attempts": attempt,
                 "mappings": len(frame),
+                "canonicalized_targets": canonicalized,
                 "history": history,
             }
         history.append({"attempt": attempt, "issues": verdict.issues})
         payload = {**payload, "feedback": verdict.issues}
 
-    return None, {"status": "rejected", "attempts": MAX_ATTEMPTS, "history": history}
+    return None, {
+        "status": "rejected",
+        "attempts": MAX_ATTEMPTS,
+        "canonicalized_targets": canonicalized,
+        "history": history,
+    }

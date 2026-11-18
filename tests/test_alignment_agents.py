@@ -7,12 +7,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pandas as pd
+
 from governance.agents.alignment_verifier import AlignmentVerifierAgent
 from governance.agents.views import require_no_patient_data
 from governance.alignment.agentic import (
     align_with_agents,
     build_evidence,
     candidate_view,
+    canonicalize_targets,
 )
 from governance.alignment.schema import extract_source_fields
 from governance.alignment.select import build_candidates
@@ -72,6 +75,47 @@ class VerifierTest(unittest.TestCase):
         evidence = build_evidence([mapping], candidates)
         verdict = AlignmentVerifierAgent().run({"mappings": [mapping], "evidence": evidence})
         self.assertTrue(verdict.ok)
+
+
+class CanonicalizeTest(unittest.TestCase):
+    """模型把 target_table 写成源表名时，按候选集做无歧义纠正。"""
+
+    def _candidates(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {"target_table": "clinical_events", "target_field": "code",
+                 "source_table": "diagnoses_icd", "source_field": "icd_code"},
+                {"target_table": "clinical_events", "target_field": "subject_id",
+                 "source_table": "patients", "source_field": "subject_id"},
+            ]
+        )
+
+    def test_wrong_target_table_is_rewritten(self) -> None:
+        mappings = [{"target_table": "diagnoses_icd", "target_field": "code",
+                     "source_table": "diagnoses_icd", "source_field": "icd_code"}]
+        fixed, count = canonicalize_targets(mappings, self._candidates())
+        self.assertEqual(count, 1)
+        self.assertEqual(fixed[0]["target_table"], "clinical_events")
+
+    def test_correct_mapping_untouched(self) -> None:
+        mappings = [{"target_table": "clinical_events", "target_field": "code",
+                     "source_table": "diagnoses_icd", "source_field": "icd_code"}]
+        fixed, count = canonicalize_targets(mappings, self._candidates())
+        self.assertEqual(count, 0)
+        self.assertEqual(fixed, mappings)
+
+    def test_unknown_target_field_is_left_for_verifier(self) -> None:
+        mappings = [{"target_table": "nope", "target_field": "invented",
+                     "source_table": "diagnoses_icd", "source_field": "icd_code"}]
+        fixed, count = canonicalize_targets(mappings, self._candidates())
+        self.assertEqual(count, 0)
+        self.assertEqual(fixed[0]["target_table"], "nope")
+
+    def test_input_not_mutated(self) -> None:
+        mappings = [{"target_table": "diagnoses_icd", "target_field": "code",
+                     "source_table": "diagnoses_icd", "source_field": "icd_code"}]
+        canonicalize_targets(mappings, self._candidates())
+        self.assertEqual(mappings[0]["target_table"], "diagnoses_icd")
 
 
 class AlignWithAgentsTest(unittest.TestCase):

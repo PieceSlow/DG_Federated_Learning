@@ -33,7 +33,7 @@ class LLMUnavailable(LLMError):
 
 @dataclass(frozen=True)
 class LLMConfig:
-    provider: str = "off"  # off | mock | api
+    provider: str = "off"  # off | mock | api | ollama
     model: str = "deepseek-flash"
     base_url: str = "https://api.deepseek.com"
     api_key: str | None = None
@@ -43,14 +43,19 @@ class LLMConfig:
     # 结构化 JSON 抽取优先用非思考模型，失败时自动降级到它。
     fallback_model: str = "deepseek-chat"
     timeout_s: float = 60.0
+    #: 仅 ollama 使用：请求级的上下文长度（原生 /api/chat 的 options.num_ctx）。
+    #: 为空时由 provider 取自己的默认值，其它 provider 忽略该字段。
+    num_ctx: int | None = None
 
     def validate(self) -> None:
-        if self.provider not in {"off", "mock", "api"}:
-            raise ValueError(f"未知 provider: {self.provider}（可选 off/mock/api）")
+        if self.provider not in {"off", "mock", "api", "ollama"}:
+            raise ValueError(
+                f"未知 provider: {self.provider}（可选 off/mock/api/ollama）"
+            )
         if self.provider == "api" and not self.api_key:
             raise LLMUnavailable(
                 "provider=api 需要环境变量 DEEPSEEK_API_KEY；"
-                "没有 key 时请使用 --llm mock 或 --llm off。"
+                "没有 key 时请使用 --llm mock / --llm ollama / --llm off。"
             )
 
 
@@ -122,7 +127,7 @@ class OffProvider:
 
 
 class ApiProvider:
-    """OpenAI 兼容接口（DeepSeek 默认）。"""
+    """OpenAI 兼容接口（DeepSeek 默认，也可指向本机 Ollama 的 ``/v1``）。"""
 
     def complete(self, request: LLMRequest, config: LLMConfig) -> LLMResponse:
         import requests  # 仅 API 模式需要
@@ -327,7 +332,7 @@ def build_service(
     mock_responses: dict[str, Any] | None = None,
     budget: Budget | None = None,
 ) -> LLMService:
-    """按 config 组装服务；mock/api 分别使用对应 provider。"""
+    """按 config 组装服务；off/mock/ollama/api 各用对应 provider。"""
     config.validate()
     cache = ResponseCache(output_dir / "llm_cache") if config.provider != "off" else None
     usage = UsageLog(output_dir / "audit" / "llm_usage.jsonl") if config.provider != "off" else None
@@ -338,6 +343,10 @@ def build_service(
         from governance.llm.mock import MockProvider
 
         provider = MockProvider(mock_responses)
+    elif config.provider == "ollama":
+        from governance.llm.ollama import OllamaProvider
+
+        provider = OllamaProvider()
     else:
         provider = ApiProvider()
 
